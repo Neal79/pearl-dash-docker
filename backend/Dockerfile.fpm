@@ -1,0 +1,47 @@
+# PHP-FPM Container - Production Runtime
+FROM php:8.2-fpm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    locales \
+    zip \
+    jpegoptim optipng pngquant gifsicle \
+    vim \
+    unzip \
+    git \
+    curl \
+    libonig-dev \
+    libxml2-dev \
+    libzip-dev \
+    libpq-dev \
+    mariadb-client \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions
+RUN docker-php-ext-install pdo_mysql mbstring zip exif pcntl bcmath gd
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy custom PHP-FPM configuration
+COPY docker/php-fpm/php-fpm.conf /usr/local/etc/php-fpm.conf
+COPY docker/php-fpm/www.conf /usr/local/etc/php-fpm.d/www.conf
+
+# Create the user that will own the application files
+ARG uid=1000
+ARG gid=1000
+RUN groupmod -o -g ${gid} www-data && \
+    usermod -o -u ${uid} -g www-data www-data
+
+# Set permissions for www-data
+RUN chown -R www-data:www-data /var/www/html
+
+EXPOSE 9000
+
+USER www-data
+
+CMD ["php-fpm", "--nodaemonize"]

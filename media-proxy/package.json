@@ -1,0 +1,15 @@
+{
+  "name": "pearl-media-proxy",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node audio-meter-service.js",
+    "dev": "node --watch audio-meter-service.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.0",
+    "express": "^4.18.0",
+    "dotenv": "^16.3.0",
+    "jsonwebtoken": "^9.0.0"
+  }
+}

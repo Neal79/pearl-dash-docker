@@ -1,0 +1,158 @@
+services:
+
+  # MySQL Database First
+  db:
+    image: mysql:8
+    container_name: db
+    restart: unless-stopped
+    volumes:
+      - db_data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: LaneChicago1997!
+      MYSQL_DATABASE: pearl_dash
+      MYSQL_USER: pearldashuser
+      MYSQL_PASSWORD: LaneChicago1997!
+    ports:
+      - "3306:3306"
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Production-Ready Laravel Container (Self-Contained)
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.testing
+      args:
+        uid: ${UID:-1000}
+        gid: ${GID:-1000}
+        vite_app_url: ${VITE_APP_URL}
+    container_name: app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - app_public:/var/www/html/public
+    env_file:
+      - .env
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+
+  # Nginx Web Server with SSL
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: nginx
+    restart: unless-stopped
+    volumes:
+      - app_public:/var/www/html/public:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - app
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+
+  # Audio Meter WebSocket Service
+  audio-meter:
+    build:
+      context: ./media-proxy
+      dockerfile: Dockerfile
+    container_name: audio-meter
+    restart: unless-stopped
+    ports:
+      - "3444:3444"  # WebSocket
+      - "3445:3445"  # Health/Status API
+    environment:
+      - NODE_ENV=production
+      - JWT_SECRET=${JWT_SECRET}
+      - MAX_CONNECTIONS_PER_IP=20
+      - AUDIO_METER_MAX_CONNECTIONS=50
+      - ALLOWED_AUDIO_DEVICES=192.168.0.0/16,172.16.0.0/12,10.0.0.0/8
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    depends_on:
+      - nginx
+
+  # Real-time Data WebSocket Service  
+  realtime-service:
+    build:
+      context: ./realtime-service
+      dockerfile: Dockerfile
+    container_name: realtime-service
+    restart: unless-stopped
+    ports:
+      - "3446:3446"  # WebSocket
+      - "3447:3447"  # Health/Status API
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    depends_on:
+      - nginx
+
+  # Pearl Device Polling Service (Database Updates)
+  polling-service:
+    build:
+      context: ./polling-service
+      dockerfile: Dockerfile
+    container_name: polling-service
+    restart: unless-stopped
+    ports:
+      - "3448:3448"  # Health/Status API
+    environment:
+      - NODE_ENV=production
+      - APP_URL=https://nginx
+    env_file:
+      - .env
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    depends_on:
+      - nginx
+
+  # Laravel Workspace Container for CLI Tasks
+  workspace:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.workspace
+      args:
+        uid: ${UID:-1000}
+        gid: ${GID:-1000}
+    container_name: workspace
+    restart: "no"  # Don't auto-restart - it's for manual tasks
+    volumes:
+      - ./backend/var/www/html:/var/www/html
+      - workspace_composer_cache:/home/www-data/.composer
+    env_file:
+      - .env
+    environment:
+      - SKIP_MIGRATIONS=true  # Migrations handled by main app container
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    depends_on:
+      db:
+        condition: service_healthy
+    tty: true
+    stdin_open: true
+
+networks:
+  pearlnet:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DOCKER_NETWORK_SUBNET:-172.20.0.0/16}
+
+volumes:
+  db_data:
+  app_public:
+  workspace_composer_cache:

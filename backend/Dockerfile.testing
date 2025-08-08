@@ -1,0 +1,89 @@
+# Production-Ready Laravel Container for Testing Build
+FROM php:8.2-fpm
+
+ARG uid=1000
+ARG gid=1000
+ARG vite_app_url
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    locales \
+    zip \
+    jpegoptim optipng pngquant gifsicle \
+    vim \
+    unzip \
+    git \
+    curl \
+    libonig-dev \
+    libxml2-dev \
+    libzip-dev \
+    libpq-dev \
+    mariadb-client \
+    supervisor \
+    nginx \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js for Vite build
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
+
+# Install PHP extensions
+RUN docker-php-ext-install pdo_mysql mbstring zip exif pcntl bcmath gd
+
+# Install Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Configure user permissions
+RUN groupmod -o -g ${gid} www-data && \
+    usermod -o -u ${uid} -g www-data www-data
+
+# Create necessary directories
+RUN mkdir -p /var/www/html/storage/logs \
+    && mkdir -p /var/www/html/storage/framework/cache \
+    && mkdir -p /var/www/html/storage/framework/sessions \
+    && mkdir -p /var/www/html/storage/framework/views \
+    && mkdir -p /var/www/html/bootstrap/cache
+
+# Copy application code
+COPY var/www/html /var/www/html
+
+# Copy supervisor config for multi-process container
+COPY docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Copy and set entrypoint for testing build
+COPY docker/testing-entrypoint.sh /usr/local/bin/testing-entrypoint.sh
+RUN chmod +x /usr/local/bin/testing-entrypoint.sh
+
+# Set ownership
+RUN chown -R www-data:www-data /var/www/html
+
+# Switch to www-data user for installations
+USER www-data
+
+# Install PHP dependencies (production optimized)
+RUN composer install --no-dev --optimize-autoloader --no-interaction
+
+# Inject VITE_APP_URL from build arg into .env file for frontend build
+RUN if [ ! -z "$vite_app_url" ]; then \
+    echo "VITE_APP_URL=$vite_app_url" >> .env; \
+    sed -i "s|^APP_URL=.*|APP_URL=$vite_app_url|g" .env; \
+    fi
+
+# Install Node.js dependencies and build assets
+RUN export npm_config_cache=/tmp/.npm && npm install && npm run build
+
+# Switch back to root for container startup
+USER root
+
+# Expose port for PHP-FPM
+EXPOSE 9000
+
+# Use testing entrypoint
+ENTRYPOINT ["/usr/local/bin/testing-entrypoint.sh"]
