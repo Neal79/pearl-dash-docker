@@ -36,7 +36,8 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - app_public:/var/www/html/public
+      # Development volume mount - comment out for production
+      - ./backend/var/www/html:/var/www/html
     env_file:
       - .env
     networks:
@@ -50,8 +51,11 @@ services:
     container_name: nginx
     restart: unless-stopped
     volumes:
-      - app_public:/var/www/html/public:ro
+      # Development volume mount - comment out for production
+      - ./backend/var/www/html/public:/var/www/html/public:ro
       - ./docker/nginx/ssl:/etc/nginx/ssl
+      # Development nginx config mount - allows live editing without rebuild
+      - ./docker/nginx/sites-enabled:/etc/nginx/sites-enabled:ro
     ports:
       - "80:80"
       - "443:443"
@@ -119,6 +123,30 @@ services:
     depends_on:
       - nginx
 
+  # Preview Image Service (Preview Image Caching)
+  preview-image-service:
+    build:
+      context: ./preview-image-service
+      dockerfile: Dockerfile
+    container_name: preview-image-service
+    restart: unless-stopped
+    ports:
+      - "3449:3449"  # Main API
+      - "3450:3450"  # Health/Status API
+    environment:
+      - NODE_ENV=development  # Enable development mode for nodemon
+    env_file:
+      - .env
+    volumes:
+      - preview_images:/app/storage/images
+      # Development volume mount - only mount the main JS file for live editing
+      - ./preview-image-service/preview-image-service.js:/app/preview-image-service.js:ro
+    networks:
+      - ${DOCKER_NETWORK_NAME:-pearlnet}
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Laravel Workspace Container for CLI Tasks
   workspace:
     build:
@@ -156,3 +184,4 @@ volumes:
   db_data:
   app_public:
   workspace_composer_cache:
+  preview_images:
