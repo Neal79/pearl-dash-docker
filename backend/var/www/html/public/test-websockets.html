@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Authentication Test</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+</head>
+<body>
+    <h2>WebSocket Authentication Test</h2>
+    <div id="results"></div>
+    <button onclick="testTokenGeneration()">1. Test Token Generation</button>
+    <button onclick="testAudioMeterWebSocket()">2. Test Audio Meter WebSocket</button>
+    <button onclick="testRealTimeWebSocket()">3. Test Real-Time WebSocket</button>
+    <button onclick="clearResults()">Clear Results</button>
+
+    <script>
+        const log = (message, type = 'info') => {
+            const results = document.getElementById('results');
+            const color = type === 'error' ? 'red' : type === 'success' ? 'green' : 'black';
+            results.innerHTML += `<div style="color: ${color}; margin: 5px 0;">${new Date().toLocaleTimeString()}: ${message}</div>`;
+            console.log(message);
+        };
+
+        const clearResults = () => {
+            document.getElementById('results').innerHTML = '';
+        };
+
+        // Test 1: Token Generation
+        async function testTokenGeneration() {
+            log('🔑 Testing JWT token generation...', 'info');
+            
+            try {
+                const response = await fetch('/api/auth/token', {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+                    },
+                    credentials: 'same-origin'
+                });
+
+                const data = await response.json();
+                
+                if (response.ok && data.success && data.token) {
+                    log(`✅ Token generated successfully!`, 'success');
+                    log(`📋 Token preview: ${data.token.substring(0, 50)}...`, 'info');
+                    log(`👤 User: ${data.user.name} (${data.user.email})`, 'info');
+                    log(`⏰ Expires in: ${data.expires_in} seconds`, 'info');
+                    
+                    // Store token for subsequent tests
+                    window.testToken = data.token;
+                    
+                    // Try to decode token payload (just for testing - don't do this in production)
+                    try {
+                        const payload = JSON.parse(atob(data.token.split('.')[1]));
+                        log(`🔍 Token payload permissions: ${JSON.stringify(payload.permissions || 'none')}`, 'info');
+                    } catch (e) {
+                        log(`⚠️ Could not decode token payload: ${e.message}`, 'error');
+                    }
+                } else {
+                    log(`❌ Token generation failed: ${data.message || 'Unknown error'}`, 'error');
+                    if (response.status === 401) {
+                        log(`🔒 Please log in to the dashboard first`, 'error');
+                    }
+                }
+            } catch (error) {
+                log(`❌ Token generation error: ${error.message}`, 'error');
+            }
+        }
+
+        // Test 2: Audio Meter WebSocket
+        async function testAudioMeterWebSocket() {
+            log('🔊 Testing Audio Meter WebSocket connection...', 'info');
+            
+            if (!window.testToken) {
+                log(`⚠️ No token available. Run token generation test first.`, 'error');
+                return;
+            }
+
+            try {
+                const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/audio-meter?token=${encodeURIComponent(window.testToken)}`;
+                log(`🔗 Connecting to: ${wsUrl.replace(/token=[^&]+/, 'token=***')}`, 'info');
+
+                const ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    log('✅ Audio Meter WebSocket connected!', 'success');
+                    
+                    // Test subscription (using actual device IP)
+                    ws.send(JSON.stringify({
+                        type: 'subscribe',
+                        device: '192.168.43.20',
+                        channel: 1
+                    }));
+                    log('📡 Sent subscription message', 'info');
+                };
+
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    log(`📨 Audio Meter message: ${message.type}`, 'success');
+                    if (message.type === 'connected') {
+                        log(`👤 Authenticated as: ${message.user?.name}`, 'success');
+                    }
+                };
+
+                ws.onclose = (event) => {
+                    if (event.code === 1008) {
+                        log(`❌ Audio Meter auth failed: ${event.reason}`, 'error');
+                    } else {
+                        log(`🔌 Audio Meter closed: ${event.code} - ${event.reason}`, 'info');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`❌ Audio Meter WebSocket error: ${error}`, 'error');
+                };
+
+                // Close after 10 seconds
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.close();
+                        log('🔌 Closed Audio Meter test connection', 'info');
+                    }
+                }, 10000);
+
+            } catch (error) {
+                log(`❌ Audio Meter WebSocket error: ${error.message}`, 'error');
+            }
+        }
+
+        // Test 3: Real-Time WebSocket
+        async function testRealTimeWebSocket() {
+            log('📊 Testing Real-Time WebSocket connection...', 'info');
+            
+            if (!window.testToken) {
+                log(`⚠️ No token available. Run token generation test first.`, 'error');
+                return;
+            }
+
+            try {
+                const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/realtime?token=${encodeURIComponent(window.testToken)}`;
+                log(`🔗 Connecting to: ${wsUrl.replace(/token=[^&]+/, 'token=***')}`, 'info');
+
+                const ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    log('✅ Real-Time WebSocket connected!', 'success');
+                    
+                    // Test subscription (using actual device IP)
+                    ws.send(JSON.stringify({
+                        type: 'subscribe',
+                        dataType: 'publisher_status',
+                        device: '192.168.43.20',
+                        channel: 1
+                    }));
+                    log('📡 Sent subscription message', 'info');
+                };
+
+                ws.onmessage = (event) => {
+                    const message = JSON.parse(event.data);
+                    log(`📨 Real-Time message: ${message.type}`, 'success');
+                    if (message.type === 'connected') {
+                        log(`👤 Authenticated as: ${message.user?.name}`, 'success');
+                    }
+                };
+
+                ws.onclose = (event) => {
+                    if (event.code === 1008) {
+                        log(`❌ Real-Time auth failed: ${event.reason}`, 'error');
+                    } else {
+                        log(`🔌 Real-Time closed: ${event.code} - ${event.reason}`, 'info');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`❌ Real-Time WebSocket error: ${error}`, 'error');
+                };
+
+                // Close after 10 seconds
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.close();
+                        log('🔌 Closed Real-Time test connection', 'info');
+                    }
+                }, 10000);
+
+            } catch (error) {
+                log(`❌ Real-Time WebSocket error: ${error.message}`, 'error');
+            }
+        }
+
+        log('🚀 WebSocket test page loaded. Make sure you are logged into the dashboard first!', 'info');
+    </script>
+</body>
+</html>

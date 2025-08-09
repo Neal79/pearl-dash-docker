@@ -1,0 +1,1728 @@
+<!--
+  PearlDeviceCard.vue - Main Pearl Mini Device Management Component
+  
+  DESIGN PRINCIPLES FOR FUTURE CLAUDE ITERATIONS:
+  ===============================================
+  
+  1. LAYOUT STABILITY: Never create layouts that move/shift content when showing messages
+     - Use absolute positioning for overlays
+     - Maintain fixed button positions
+     - Preserve consistent spacing
+  
+  2. USER FEEDBACK PATTERNS:
+     - Success: Green messages for completed actions
+     - Error: Red messages for failures  
+     - Info: Blue messages for informational feedback
+     - Use floating overlays that don't disrupt layout
+     - Auto-dismiss after 3 seconds with manual close option
+  
+  3. STREAMING STATUS LOGIC:
+     - Gray: No publishers available (neutral state)
+     - Red: Has publishers but ALL are stopped (error state)
+     - Green: ALL publishers are streaming (success state)
+     - Orange: ANY publisher transitioning (warning state)
+  
+  4. API INTEGRATION PATTERNS:
+     - Use composables for reusable logic
+     - Real-time polling for status updates (1s for publishers, 2s for channels)
+     - Graceful error handling with user feedback
+     - Reactive updates using Vue refs and computed properties
+  
+  5. ANIMATION STANDARDS:
+     - Fade in: 0.3s ease-out with subtle slide
+     - Fade out: 0.2s ease-in 
+     - Use Vue transitions for smooth animations
+     - Backdrop blur for modern overlay appearance
+-->
+<template>
+  <v-card class="pearl-device-card" elevation="2">
+    <!-- Card Header with Channel Dropdown -->
+    <v-card-title class="d-flex align-center justify-space-between pb-2">
+      <div class="d-flex align-center">
+        <v-btn
+          :icon="isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-monitor'"
+          color="primary"
+          variant="text"
+          size="small"
+          class="mr-2"
+          @click="toggleFullscreen"
+          :title="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"
+        />
+        <span class="text-h6">{{ device.name || device.ip }}</span>
+      </div>
+      
+      <div class="d-flex align-center ga-2">
+        <!-- Channel Selection Dropdown -->
+        <v-select
+          v-model="selectedChannel"
+          :items="channelOptions"
+          item-title="name"
+          item-value="value"
+          label="Channel"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="channel-select"
+          prepend-inner-icon="mdi-video"
+          style="max-width: 150px;"
+          @update:model-value="onChannelChange"
+        />
+        
+        <!-- Remove Device Button (hidden in fullscreen) -->
+        <v-btn
+          v-if="!isFullscreen"
+          icon="mdi-close"
+          size="small"
+          variant="text"
+          color="error"
+          @click="removeDevice"
+        />
+      </div>
+    </v-card-title>
+
+    <v-divider />
+
+    <!-- Tab Navigation -->
+    <v-tabs
+      v-model="activeTab"
+      color="primary"
+      align-tabs="center"
+      class="px-4"
+      density="compact"
+    >
+      <v-tab value="preview" size="small">
+        <v-icon size="16" class="mr-1">mdi-eye</v-icon>
+        <span class="text-caption">Preview</span>
+      </v-tab>
+      <v-tab value="stream" size="small">
+        <v-icon size="16" class="mr-1">mdi-broadcast</v-icon>
+        <span class="text-caption">Stream</span>
+      </v-tab>
+      <v-tab value="record" size="small">
+        <v-icon size="16" class="mr-1">mdi-record</v-icon>
+        <span class="text-caption">Record</span>
+      </v-tab>
+      <v-tab value="status" size="small">
+        <v-icon size="16" class="mr-1">mdi-information</v-icon>
+        <span class="text-caption">Status</span>
+      </v-tab>
+    </v-tabs>
+
+    <!-- Tab Content with Fixed Height -->
+    <v-card-text class="pa-0 tab-content-container">
+      <v-tabs-window v-model="activeTab" class="tab-content-window">
+        <!-- Preview Tab -->
+        <v-tabs-window-item value="preview">
+          <div class="preview-container pa-3">
+            <div v-if="selectedChannel">
+              <!-- Preview and Audio Meter Layout -->
+              <div class="d-flex ga-2 mb-4">
+                <!-- 16:9 Preview Area -->
+                <div class="preview-wrapper flex-grow-1">
+                  <div class="aspect-ratio-container">
+                    <div class="preview-content">
+                      <!-- Still Image -->
+                      <img 
+                        v-if="currentDisplayUrl"
+                        :src="currentDisplayUrl" 
+                        :alt="`${device.name || device.ip} Channel ${selectedChannel}`"
+                        class="w-100 h-100"
+                        style="object-fit: cover;"
+                        @error="onImageError"
+                      />
+                      
+                      <!-- Loading placeholder -->
+                      <div 
+                        v-else
+                        class="d-flex align-center justify-center h-100"
+                      >
+                        <div class="text-center">
+                          <v-progress-circular 
+                            indeterminate 
+                            color="primary" 
+                            class="mb-2"
+                          />
+                          <div class="text-body-2 text-medium-emphasis">
+                            Loading preview...
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Audio Meter -->
+                <div class="audio-meter-wrapper d-flex align-center">
+                  <AudioMeter 
+                    :device="device.ip" 
+                    :channel="selectedChannel"
+                  />
+                </div>
+              </div>
+              
+              <!-- Streaming/Recording Controls -->
+              <div class="controls-section">
+                <v-divider class="mb-1" />
+                
+                <!-- 
+                  FLOATING USER MESSAGE OVERLAY
+                  =============================
+                  CRITICAL: This overlay MUST maintain layout stability
+                  - Uses absolute positioning to float over controls
+                  - Never moves or shifts buttons/content
+                  - Auto-dismisses after 3 seconds
+                  - Smooth Vue transitions for professional UX
+                -->
+                <Transition name="fade-message" appear>
+                  <div v-if="userMessage" class="user-message-overlay">
+                    <v-alert
+                      :type="userMessageType"
+                      variant="tonal"
+                      density="compact"
+                      :text="userMessage"
+                      closable
+                      @click:close="userMessage = null"
+                    />
+                  </div>
+                </Transition>
+                
+                <div class="d-flex align-center justify-space-between">
+                  <!-- Status Indicators -->
+                  <div class="d-flex align-center ga-4">
+                    <!-- Connection Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="connectionStatus === 'connected' ? 'success' : 
+                                connectionStatus === 'connecting' ? 'warning' : 'error'"
+                        size="16"
+                      >
+                        mdi-circle
+                      </v-icon>
+                      <span class="text-caption">
+                        {{ connectionStatus === 'connected' ? 'Connected' : 
+                           connectionStatus === 'connecting' ? 'Connecting' : 'Disconnected' }}
+                      </span>
+                    </div>
+                    
+                    <!-- 
+                      STREAMING STATUS INDICATOR
+                      =========================
+                      Color Logic (CRITICAL - maintain this exact logic):
+                      - Green: ALL publishers streaming (success state)
+                      - Red: Has publishers but ANY stopped (error - capability exists but not used)
+                      - Orange: ANY publisher transitioning (warning - in progress)
+                      - Gray: No publishers available (neutral - no capability)
+                    -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="streamingStatus.active ? 'success' : 
+                                streamingStatus.state === 'starting' || streamingStatus.state === 'stopping' ? 'warning' : 
+                                streamingStatus.hasPublishers ? 'error' : 'grey'"
+                        size="20"
+                      >
+                        {{ streamingStatus.active ? 'mdi-broadcast' : 
+                           streamingStatus.state === 'starting' ? 'mdi-loading mdi-spin' :
+                           streamingStatus.state === 'stopping' ? 'mdi-loading mdi-spin' : 'mdi-broadcast-off' }}
+                      </v-icon>
+                      <span class="text-caption" :class="{
+                        'text-success': streamingStatus.active,
+                        'text-warning': streamingStatus.state === 'starting' || streamingStatus.state === 'stopping',
+                        'text-error': !streamingStatus.active && streamingStatus.state === 'stopped' && streamingStatus.hasPublishers,
+                        'text-medium-emphasis': !streamingStatus.active && streamingStatus.state === 'stopped' && !streamingStatus.hasPublishers
+                      }">
+                        {{ streamingStatus.state === 'starting' ? 'Starting...' :
+                           streamingStatus.state === 'stopping' ? 'Stopping...' :
+                           streamingStatus.active ? 'Streaming' : 'Offline' }}
+                      </span>
+                    </div>
+                    
+                    <!-- Recording Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="recordingStatus.active ? 'error' : 'grey'"
+                        size="20"
+                      >
+                        {{ recordingStatus.active ? 'mdi-record-rec' : 'mdi-record' }}
+                      </v-icon>
+                      <span class="text-caption" :class="recordingStatus.active ? 'text-error' : 'text-medium-emphasis'">
+                        {{ recordingStatus.active ? 'Recording' : 'Stopped' }}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <!-- Control Buttons -->
+                  <div class="d-flex ga-2">
+                    <!-- 
+                      STREAMING CONTROL BUTTON
+                      ========================
+                      Button behavior for future reference:
+                      - Green when stopped (ready to start)
+                      - Red when streaming (ready to stop)
+                      - Disabled during transitions
+                      - Shows spinner during API calls
+                      - Provides user feedback via floating overlay (not layout-shifting alerts)
+                    -->
+                    <v-btn
+                      :color="streamingStatus.active ? 'error' : 'success'"
+                      :icon="isControlling ? 'mdi-loading mdi-spin' : 
+                             streamingStatus.active ? 'mdi-stop' : 'mdi-play'"
+                      size="small"
+                      variant="tonal"
+                      :loading="isControlling"
+                      :disabled="isControlling || streamingStatus.state === 'starting' || streamingStatus.state === 'stopping'"
+                      @click="toggleStreaming"
+                    />
+                    
+                    <!-- Start/Stop Recording -->
+                    <v-btn
+                      :color="recordingStatus.active ? 'error' : 'error'"
+                      :icon="recordingStatus.active ? 'mdi-stop' : 'mdi-record'"
+                      size="small"
+                      variant="tonal"
+                      @click="toggleRecording"
+                    />
+                    
+                    <!-- Audio Mute/Unmute Button -->
+                    <v-btn
+                      :color="isAudioMuted ? 'grey' : 'primary'"
+                      :icon="isAudioMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+                      size="small"
+                      variant="tonal"
+                      :disabled="!canToggleAudio"
+                      @click="toggleAudioMute"
+                      :title="!canToggleAudio ? 'Select a channel to enable audio' : 
+                              isAudioMuted ? 'Click to unmute and start audio streaming' : 'Click to mute audio'"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- No Channel Selected -->
+            <div v-else>
+              <!-- Preview and Audio Meter Layout with Placeholder -->
+              <div class="d-flex ga-2 mb-4">
+                <!-- 16:9 Placeholder Area -->
+                <div class="preview-wrapper flex-grow-1">
+                  <div class="aspect-ratio-container aspect-ratio-placeholder">
+                    <div class="preview-content d-flex align-center justify-center">
+                      <div class="text-center">
+                        <v-icon size="64" color="grey-lighten-1" class="mb-3">
+                          mdi-video-outline
+                        </v-icon>
+                        <div class="text-h6 text-medium-emphasis mb-2">
+                          {{ device.name || device.ip }}
+                        </div>
+                        <div class="text-body-2 text-medium-emphasis">
+                          Select a channel to view preview
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Audio Meter Placeholder -->
+                <div class="audio-meter-wrapper d-flex align-center justify-center">
+                  <div class="audio-meter-placeholder">
+                    <v-icon color="grey-lighten-1" size="24">
+                      mdi-volume-off
+                    </v-icon>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Controls Section (Disabled State) -->
+              <div class="controls-section">
+                <v-divider class="mb-1" />
+                
+                <div class="d-flex align-center justify-space-between">
+                  <!-- Status Indicators (Disabled) -->
+                  <div class="d-flex align-center ga-4">
+                    <!-- Connection Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="16">
+                        mdi-circle
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        No Channel
+                      </span>
+                    </div>
+                    
+                    <!-- Streaming Status (Disabled) -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="20">
+                        mdi-broadcast-off
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        Offline
+                      </span>
+                    </div>
+                    
+                    <!-- Recording Status (Disabled) -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="20">
+                        mdi-record
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        Stopped
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <!-- Control Buttons (Disabled) -->
+                  <div class="d-flex ga-2">
+                    <v-btn
+                      icon="mdi-play"
+                      size="small"
+                      variant="tonal"
+                      color="grey"
+                      disabled
+                    />
+                    <v-btn
+                      icon="mdi-record"
+                      size="small"
+                      variant="tonal"
+                      color="grey"
+                      disabled
+                    />
+                    
+                    <!-- Audio Mute Button (Disabled) -->
+                    <v-btn
+                      icon="mdi-volume-off"
+                      size="small"
+                      variant="tonal"
+                      color="grey"
+                      disabled
+                      title="Select a channel to enable audio"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </v-tabs-window-item>
+
+        <!-- Stream Tab -->
+        <v-tabs-window-item value="stream">
+          <div class="stream-container scrollable-content">
+            <div v-if="selectedChannel" class="pa-3">
+              <!-- Publishers List with Pagination -->
+              <div class="publishers-section">
+                <div class="d-flex align-center justify-space-between mb-3">
+                  <h3 class="text-subtitle-1">Publishers</h3>
+                  <v-chip 
+                    :color="hasPublishers ? 'primary' : 'grey'" 
+                    size="small" 
+                    variant="tonal"
+                  >
+                    {{ enhancedPublishers.length }} {{ enhancedPublishers.length === 1 ? 'Publisher' : 'Publishers' }}
+                  </v-chip>
+                </div>
+
+                <!-- Publishers List -->
+                <div v-if="hasPublishers" class="publishers-list" :key="`publishers-${realtimeLastUpdated?.getTime() || Date.now()}`">
+                  <!-- Paginated Publisher Items -->
+                  <v-list lines="two" density="compact" class="pa-0">
+                    <v-list-item 
+                      v-for="publisher in paginatedPublishers" 
+                      :key="getPublisherKey(publisher)"
+                      class="px-2 py-1"
+                    >
+                      <template v-slot:prepend>
+                        <v-avatar :color="getPublisherStatusColor(publisher)" size="32">
+                          <v-icon color="white" size="16">
+                            {{ getPublisherIcon(publisher) }}
+                          </v-icon>
+                        </v-avatar>
+                      </template>
+
+                      <v-list-item-title class="text-body-2 font-weight-medium">
+                        {{ publisher.name || `Publisher ${publisher.id}` }}
+                      </v-list-item-title>
+                      
+                      <v-list-item-subtitle class="text-caption">
+                        <div class="d-flex align-center ga-2">
+                          <v-chip 
+                            :color="getPublisherStatusColor(publisher)" 
+                            size="x-small" 
+                            variant="tonal"
+                          >
+                            {{ getPublisherStatusText(publisher) }}
+                          </v-chip>
+                          <span class="text-caption text-medium-emphasis">
+                            {{ publisher.type?.toUpperCase() || 'UNKNOWN' }}
+                          </span>
+                        </div>
+                      </v-list-item-subtitle>
+
+                      <template v-slot:append>
+                        <v-btn
+                          :color="publisher.status?.started ? 'error' : 'success'"
+                          :icon="publisher.status?.started ? 'mdi-stop' : 'mdi-play'"
+                          size="small"
+                          variant="tonal"
+                          @click="toggleIndividualPublisher(publisher)"
+                        />
+                      </template>
+                    </v-list-item>
+                  </v-list>
+
+                  <!-- Pagination -->
+                  <div v-if="totalPages > 1" class="d-flex justify-center mt-3">
+                    <v-pagination
+                      v-model="currentPage"
+                      :length="totalPages"
+                      :total-visible="3"
+                      size="small"
+                      density="compact"
+                    />
+                  </div>
+                </div>
+
+                <!-- No Publishers State -->
+                <div v-else class="empty-state">
+                  <v-icon size="48" color="grey-lighten-1" class="mb-2">
+                    mdi-broadcast-off
+                  </v-icon>
+                  <div class="text-subtitle-2 text-medium-emphasis mb-1">
+                    No Publishers Available
+                  </div>
+                  <div class="text-caption text-medium-emphasis">
+                    This channel has no configured publishers for streaming.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- No Channel Selected -->
+            <div v-else class="empty-state">
+              <v-icon size="48" color="grey-lighten-1" class="mb-2">
+                mdi-video-outline
+              </v-icon>
+              <div class="text-subtitle-2 text-medium-emphasis mb-1">
+                No Channel Selected
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                Select a channel to view its publishers
+              </div>
+            </div>
+          </div>
+        </v-tabs-window-item>
+
+        <!-- Record Tab -->
+        <v-tabs-window-item value="record">
+          <div class="record-container scrollable-content">
+            <!-- Record tab content - placeholder for future implementation -->
+            <div v-if="selectedChannel" class="empty-state">
+              <v-icon size="48" color="grey-lighten-1" class="mb-2">
+                mdi-record
+              </v-icon>
+              <div class="text-subtitle-2 text-medium-emphasis mb-1">
+                Recording Controls
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                Recording management will be available in a future update.
+              </div>
+            </div>
+
+            <!-- No Channel Selected -->
+            <div v-else class="empty-state">
+              <v-icon size="48" color="grey-lighten-1" class="mb-2">
+                mdi-video-outline
+              </v-icon>
+              <div class="text-subtitle-2 text-medium-emphasis mb-1">
+                No Channel Selected
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                Select a channel to view recording options
+              </div>
+            </div>
+          </div>
+        </v-tabs-window-item>
+
+        <!-- Status Tab -->
+        <v-tabs-window-item value="status">
+          <div class="status-container scrollable-content pa-3">
+            <v-list lines="two" density="compact">
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon 
+                    :color="connectionStatus === 'connected' ? 'success' : 'error'"
+                    :icon="connectionStatus === 'connected' ? 'mdi-check-circle' : 'mdi-alert-circle'"
+                  />
+                </template>
+                <v-list-item-title>Device Status</v-list-item-title>
+                <v-list-item-subtitle>
+                  {{ connectionStatus === 'connected' ? 'Online' : 'Offline' }}
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon color="info" icon="mdi-ip-network" />
+                </template>
+                <v-list-item-title>IP Address</v-list-item-title>
+                <v-list-item-subtitle>
+                  <a 
+                    :href="`http://${device.ip}`" 
+                    target="_blank" 
+                    class="text-blue-lighten-2 text-decoration-none"
+                  >
+                    {{ device.ip }}
+                  </a>
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="device.name">
+                <template v-slot:prepend>
+                  <v-icon color="primary" icon="mdi-rename-box" />
+                </template>
+                <v-list-item-title>Device Name</v-list-item-title>
+                <v-list-item-subtitle>{{ device.name }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="selectedChannel">
+                <template v-slot:prepend>
+                  <v-icon color="primary" icon="mdi-video-input-component" />
+                </template>
+                <v-list-item-title>Active Channel</v-list-item-title>
+                <v-list-item-subtitle>Channel {{ selectedChannel }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon color="secondary" icon="mdi-clock-outline" />
+                </template>
+                <v-list-item-title>Last Updated</v-list-item-title>
+                <v-list-item-subtitle>{{ lastUpdated }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon 
+                    :color="channelMode === 'dynamic' ? 'success' : channelMode === 'loading' ? 'warning' : 'info'"
+                    :icon="channelMode === 'dynamic' ? 'mdi-api' : channelMode === 'loading' ? 'mdi-loading' : 'mdi-backup-restore'"
+                  />
+                </template>
+                <v-list-item-title>Channel Source</v-list-item-title>
+                <v-list-item-subtitle>
+                  {{ channelMode === 'dynamic' ? `API (${channels?.length || 0} channels)` : 
+                     channelMode === 'loading' ? 'Loading...' : 'Fallback (4 channels)' }}
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="channelsError">
+                <template v-slot:prepend>
+                  <v-icon color="error" icon="mdi-alert-circle" />
+                </template>
+                <v-list-item-title>Channel API Error</v-list-item-title>
+                <v-list-item-subtitle>{{ channelsError }}</v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </div>
+        </v-tabs-window-item>
+      </v-tabs-window>
+    </v-card-text>
+  </v-card>
+</template>
+
+<script setup lang="ts">
+// @claude: ALWAYS make a backup of this file before making changes
+
+/*
+  SCRIPT ORGANIZATION FOR FUTURE CLAUDE ITERATIONS:
+  =================================================
+  
+  1. COMPOSABLE PATTERN:
+     - useDeviceChannels: Handles channel discovery (initial load only)
+     - usePublisherControl: Manages streaming control (HTTP for actions, WebSocket for status)
+     - useAudioMeterWebSocket: Provides real-time audio level data
+  
+  2. REACTIVE STATE MANAGEMENT:
+     - selectedChannel: ref that drives all dependent logic
+     - Publisher status computed from real API data (not cached)
+     - hasPublishers computed to determine UI behavior
+  
+  3. USER FEEDBACK SYSTEM:
+     - userMessage: Controls floating overlay display
+     - showUserMessage(): Helper for consistent message patterns
+     - Auto-dismiss with manual close option
+  
+  4. CRITICAL INITIALIZATION ORDER:
+     - selectedChannel MUST be declared before usePublisherControl
+     - Composables use reactive refs, not primitive values
+     - Watch for channel changes to trigger WebSocket subscription updates
+*/
+
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useAudioMeterWebSocket } from '../composables/useAudioMeterWebSocket'
+import { useDeviceChannels } from '../composables/useDeviceChannels'
+import { usePublisherControl } from '../composables/usePublisherControl'
+import { useRealTimeData } from '../composables/useRealTimeData'
+import { useAudioStreaming } from '../composables/useAudioStreaming'
+import AudioMeter from './AudioMeter.vue'
+
+interface Device {
+  id: number
+  name?: string
+  ip: string
+}
+
+interface Props {
+  device: Device
+  showDebug?: boolean
+  isFullscreen?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  showDebug: false,
+  isFullscreen: false
+})
+
+const emit = defineEmits<{
+  remove: [id: number]
+  toggleFullscreen: [id: number]
+}>()
+
+// Create a unique storage key for this device
+const getStorageKey = () => `pearlDeviceCard_channel_${props.device.id}`
+
+// Load saved channel from localStorage
+const loadSavedChannel = (): string | '' => {
+  try {
+    const saved = localStorage.getItem(getStorageKey())
+    if (saved && saved !== '') {
+      return saved
+    }
+  } catch (error) {
+    console.warn('Failed to load saved channel from localStorage:', error)
+  }
+  return ''
+}
+
+// Initialize selectedChannel with saved value FIRST
+const selectedChannel = ref<string | ''>(loadSavedChannel())
+
+// Dynamic channel management using the new composable
+const { 
+  channels,
+  loading: channelsLoading,
+  error: channelsError,
+  channelOptions: dynamicChannelOptions,
+  hasChannels,
+  findChannel,
+  fetchChannels, // ← Add this to use the same instance
+  stopPolling: stopChannelPolling // ← Add this for cleanup
+} = useDeviceChannels(props.device.id)
+
+// Publisher control for streaming (Pure WebSocket mode - no HTTP polling)
+const {
+  publishers: httpPublishers,
+  isControlling,
+  error: publisherError,
+  startPublishers,
+  stopPublishers,
+  fetchPublisherStatus
+} = usePublisherControl(props.device.id, selectedChannel)
+
+// Real-time WebSocket data for publisher status updates
+const {
+  data: realtimePublisherData,
+  isConnected: realtimeConnected,
+  error: realtimeError,
+  lastUpdated: realtimeLastUpdated
+} = useRealTimeData('publisher_status', props.device.ip, selectedChannel)
+
+// Simple audio state - only track mute/unmute
+const audioStreamingInstance = ref<any>(null)
+const isAudioMuted = ref(true) // Always starts muted
+
+// Debug WebSocket connection status  
+console.log(`🔧 PearlDeviceCard WebSocket setup for device ${props.device.ip}:`)
+console.log(`   - Device ID: ${props.device.id}`)
+console.log(`   - Selected Channel: ${selectedChannel.value}`)
+console.log(`   - Connection Status: ${realtimeConnected.value}`)
+console.log(`   - Error: ${realtimeError.value}`)
+console.log(`   - Data Available: ${!!realtimePublisherData.value}`)
+
+// Fallback to hardcoded channels if API fails
+const fallbackChannels = [1, 2, 3, 4]
+const fallbackChannelOptions = computed(() => [
+  { name: 'Select Channel', value: '' },
+  ...fallbackChannels.map(ch => ({ name: `Channel ${ch}`, value: ch.toString() }))
+])
+
+// Use dynamic channels if available, otherwise fallback
+const channelOptions = computed(() => {
+  return hasChannels.value ? dynamicChannelOptions.value : fallbackChannelOptions.value
+})
+
+// Determine which channel mode we're using
+const channelMode = computed(() => {
+  if (channelsLoading.value) return 'loading'
+  if (hasChannels.value) return 'dynamic'
+  return 'fallback'
+})
+
+// Save channel to localStorage
+const saveChannel = (channel: string | '') => {
+  try {
+    const key = getStorageKey()
+    if (channel === '') {
+      localStorage.removeItem(key)
+    } else {
+      localStorage.setItem(key, channel)
+    }
+  } catch (error) {
+    console.warn('Failed to save channel to localStorage:', error)
+  }
+}
+
+const activeTab = ref('preview')
+
+// WebSocket connection for audio meters  
+const { connected, connecting } = useAudioMeterWebSocket()
+
+// Computed connection status with debounced state to prevent glitches
+const connectionStatus = computed(() => {
+  // Priority 1: If actively loading channels, show connecting
+  if (channelsLoading.value) return 'connecting'
+  
+  // Priority 2: If we have channels data (successful state), show connected
+  if (hasChannels.value) return 'connected'
+  
+  // Priority 3: If channel API has error, show disconnected  
+  if (channelsError.value) return 'disconnected'
+  
+  // Priority 4: Fallback to WebSocket status (but only if no channels API data)
+  if (connected.value) return 'connected'
+  if (connecting.value) return 'connecting'
+  return 'disconnected'
+})
+
+// Still image URL using proxy API (computed for reactivity but not used directly)
+// const stillImageUrl = computed(() => {
+//   if (!selectedChannel.value) return ''
+//   return `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+// })
+
+// Seamless image loading system
+const currentDisplayUrl = ref('')
+
+// Function to preload and seamlessly switch images
+const loadNewImage = (url: string): Promise<void> => {
+  return new Promise<void>((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      // Only update the display URL after the image is fully loaded
+      currentDisplayUrl.value = url
+      resolve()
+    }
+    img.onerror = () => {
+      reject(new Error('Failed to load image'))
+    }
+    img.src = url
+  })
+}
+
+// Refresh image with seamless transition
+const refreshImage = async () => {
+  if (!selectedChannel.value) return
+  
+  const newUrl = `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+  
+  try {
+    await loadNewImage(newUrl)
+  } catch {
+    console.warn(`🖼️ Failed to load still image for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+    // On error, set fallback image
+    const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+    currentDisplayUrl.value = fallbackUrl
+  }
+}
+
+// Handle image error
+const onImageError = () => {
+  console.warn(`🖼️ Image error for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+  const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+  currentDisplayUrl.value = fallbackUrl
+}
+
+// Auto-refresh image every 5 seconds
+let imageRefreshInterval: any
+
+/**
+ * INTELLIGENT RETRY MECHANISM FOR NEW DEVICES
+ * ===========================================
+ * 
+ * PURPOSE: Bridge the gap between device creation and data availability
+ * 
+ * BACKGROUND:
+ * When a user adds a new device, the backend does synchronous polling during device creation,
+ * but there can be timing edge cases where the frontend component mounts before the backend
+ * response completes. This retry mechanism ensures the frontend always gets the data.
+ * 
+ * RETRY STRATEGY:
+ * - 5 attempts with incremental delays: 500ms, 700ms, 900ms, 1100ms, 1300ms
+ * - Total retry time: ~4.5 seconds maximum
+ * - Exits early if data is found on any attempt
+ * 
+ * WHEN THIS RUNS:
+ * - Component onMounted (every time a device card loads)
+ * - Especially important for newly created devices
+ * - Also helps with page refreshes and navigation
+ * 
+ * FUTURE ENHANCEMENT IDEAS:
+ * - Add exponential backoff for flaky network connections
+ * - Add device type-specific retry logic
+ * - Add WebSocket fallback for instant updates
+ */
+// Initialize image loading
+const initializeImage = async () => {
+  if (!selectedChannel.value) return
+  
+  const initialUrl = `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+  
+  try {
+    await loadNewImage(initialUrl)
+  } catch {
+    console.warn(`🖼️ Failed to load initial image for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+    const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+    currentDisplayUrl.value = fallbackUrl
+  }
+}
+
+onMounted(async () => {
+  try {
+    console.log(`🔄 PearlDeviceCard mounted for device ${props.device.id} (${props.device.name || props.device.ip})`)
+    console.log(`📡 Real-time WebSocket connection status: ${realtimeConnected.value ? '✅ Connected' : '❌ Disconnected'}`)
+    
+    // STABILITY ENHANCEMENT: Add small initial delay to prevent race conditions
+    // This prevents visual glitches from rapid state changes during initialization
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
+    // PURE WEBSOCKET MODE: No HTTP channel fetching - data comes from real-time updates
+    console.log(`🔥 Device ${props.device.id} using pure WebSocket mode - no HTTP polling`)
+    
+    /**
+     * ADAPTIVE POLLING STRATEGY FOR OPTIMAL UX
+     * ========================================
+     * 
+     * This implements a two-tier polling system based on device state:
+     * 
+     * TIER 1 - NORMAL DEVICES (have channels):
+     * - 2-second intervals (backend has cached data)
+     * - Efficient for established devices
+     * - Reduces server load while maintaining freshness
+     * 
+     * TIER 2 - NEW/INITIALIZING DEVICES (no channels yet):
+     * - 1-second intervals for first 30 seconds
+     * - Catches backend data as soon as it's available  
+     * - Auto-switches to normal polling after 30 seconds
+     * - Provides instant feedback for device initialization
+     * 
+     * HYBRID MODE: INITIAL LOAD + PURE WEBSOCKET UPDATES
+     * ==================================================
+     * 1. On mount: ONE HTTP call to get initial device state
+     * 2. After mount: Pure WebSocket mode for all updates
+     * 
+     * This provides:
+     * - Immediate functional UI on load
+     * - Real-time updates without HTTP conflicts
+     * - No visual glitches from competing data sources
+     */
+    
+    // INITIAL DATA LOAD: Get current device state for immediate UI functionality
+    console.log(`🔥 Device ${props.device.id} loading initial data, then switching to pure WebSocket mode`)
+    
+    // Load initial channels using the SAME composable instance
+    try {
+      console.log(`🔄 [Mount] Loading initial channels for device ${props.device.id}`)
+      // Use the existing fetchChannels from the composable instance above
+      await fetchChannels()
+      console.log(`✅ [Mount] Initial channels loaded for device ${props.device.id}`)
+      console.log(`📋 [Mount] Selected channel after load: "${selectedChannel.value}"`)
+      
+      // Also fetch initial publisher data if we have a selected channel
+      if (selectedChannel.value) {
+        console.log(`🔄 [Mount] Loading initial publisher data for device ${props.device.id}, channel ${selectedChannel.value}`)
+        await fetchPublisherStatus()
+        console.log(`✅ [Mount] Initial publisher data loaded for device ${props.device.id}`)
+      } else {
+        console.log(`⚠️ [Mount] No selected channel for device ${props.device.id}, skipping publisher fetch`)
+      }
+    } catch (error) {
+      console.warn(`⚠️ [Mount] Failed to load initial data for device ${props.device.id}:`, error)
+    }
+    
+    // After initial load, rely purely on WebSocket updates
+    
+    /*
+      IMMEDIATE DATA LOADING PATTERN FOR FUTURE CLAUDE ITERATIONS:
+      ==========================================================
+      
+      CRITICAL: When adding new API-driven features, always follow this pattern:
+      1. Call the fetch function IMMEDIATELY to get initial data
+      2. THEN start the polling timer for updates
+      
+      This ensures:
+      - UI shows real data immediately on load (not default/empty states)
+      - Users see accurate status without waiting for first timer interval
+      - Better perceived performance and user experience
+      
+      Example pattern:
+      ```
+      if (selectedChannel.value) {
+        await fetchYourNewData()    // ← IMMEDIATE call first
+        startYourNewDataPolling()   // ← THEN start timer
+      }
+      ```
+      
+      Apply this to ALL new features: publisher status, recording status, 
+      device info, stream quality, etc.
+    */
+    
+    // Pure WebSocket mode - no HTTP polling, only real-time data
+    console.log('🎯 Pure WebSocket mode activated. All data from real-time service.')
+    
+    // Initialize image if we have a selected channel
+    if (selectedChannel.value) {
+      await initializeImage()
+      imageRefreshInterval = setInterval(refreshImage, 5000)
+    }
+  } catch (err) {
+    console.error('Error in onMounted:', err)
+  }
+})
+
+onBeforeUnmount(() => {
+  // Stop channel polling only
+  stopChannelPolling()
+  
+  // Clear image refresh interval
+  if (imageRefreshInterval) {
+    clearInterval(imageRefreshInterval)
+  }
+  
+  // Clean up audio streaming
+  if (audioStreamingInstance.value) {
+    audioStreamingInstance.value.unsubscribe()
+    audioStreamingInstance.value = null
+  }
+  isAudioMuted.value = true
+})
+
+// Watch for channels being loaded to validate saved selection
+watch(channels, (newChannels) => {
+  if (newChannels && newChannels.length > 0 && selectedChannel.value) {
+    // Check if saved channel still exists
+    const channelExists = newChannels.some(ch => ch.id.toString() === selectedChannel.value)
+    if (!channelExists) {
+      console.warn(`Saved channel ${selectedChannel.value} no longer exists, clearing selection`)
+      selectedChannel.value = ''
+    }
+  }
+})
+
+// Watch real-time connection and manage HTTP polling fallback
+// Real-time WebSocket connection status (Pure WebSocket mode - no HTTP fallback needed)
+
+// NOTE: Removed obsolete real-time data watcher that was causing console spam
+// and potential data conflicts. The reactive data automatically updates the UI
+// through computed properties without needing explicit watchers.
+
+// However, we need to watch for connection status changes to ensure WebSocket works
+watch([realtimeConnected, realtimeError], ([connected, error]) => {
+  if (props.showDebug) {
+    console.log(`🔌 WebSocket status for ${props.device.ip}: Connected=${connected}, Error=${error}`)
+  }
+}, { immediate: true })
+
+// Watch for channel changes in pure real-time mode
+watch(selectedChannel, async (newChannel, oldChannel) => {
+  // Save to localStorage
+  saveChannel(newChannel)
+  
+  // Reset pagination when changing channels
+  currentPage.value = 1
+  
+  // STABILITY: Add small delay to prevent rapid state changes during channel switching
+  await new Promise(resolve => setTimeout(resolve, 50))
+  
+  // Pure WebSocket mode - no HTTP polling even on channel change
+  console.log('🎯 Channel changed to', newChannel, '- waiting for WebSocket data.')
+  
+  // Clean up audio when channel changes
+  if (audioStreamingInstance.value) {
+    console.log('🎵 Channel changed - cleaning up audio instance')
+    audioStreamingInstance.value.unsubscribe()
+    audioStreamingInstance.value = null
+  }
+  
+  // Always return to muted state when channel changes
+  isAudioMuted.value = true
+  console.log('🎵 Channel changed - audio reset to muted state')
+  
+  // Handle image refresh interval with stability
+  if (imageRefreshInterval) {
+    clearInterval(imageRefreshInterval)
+  }
+  if (selectedChannel.value) {
+    currentDisplayUrl.value = '' // Clear current image
+    await initializeImage()
+    imageRefreshInterval = setInterval(refreshImage, 5000)
+  } else {
+    currentDisplayUrl.value = ''
+  }
+})
+
+// Handle channel change
+const onChannelChange = () => {
+  console.log(`📺 Channel changed to ${selectedChannel.value} for device ${props.device.name || props.device.ip}`)
+}
+
+// Check if current channel has publishers
+const hasPublishers = computed(() => {
+  if (!selectedChannel.value) return false
+  const channel = findChannel(selectedChannel.value)
+  return channel?.publishers && channel.publishers.length > 0
+})
+
+// Stable streaming status with proper state synchronization to prevent glitches
+const streamingStatus = computed(() => {
+  // Default stable state
+  const defaultState = {
+    active: false,
+    state: 'stopped' as const,
+    hasPublishers: hasPublishers.value
+  }
+
+  // If no channel selected, return default
+  if (!selectedChannel.value) return defaultState
+
+  // Use real-time WebSocket data ONLY if connected AND we have recent data
+  if (realtimeConnected.value && realtimePublisherData.value && realtimePublisherData.value.publishers) {
+    const rtPublishers = realtimePublisherData.value.publishers || []
+    
+    if (rtPublishers.length === 0) {
+      return { active: false, state: 'stopped' as const, hasPublishers: false }
+    }
+    
+    const hasStarting = rtPublishers.some(p => p.status?.state === 'starting')
+    const hasStopping = rtPublishers.some(p => p.status?.state === 'stopping')  
+    const allStarted = rtPublishers.every(p => p.status?.started === true)
+    
+    let state: 'stopped' | 'starting' | 'started' | 'stopping' = 'stopped'
+    let active = false
+    
+    if (hasStopping) {
+      state = 'stopping'
+    } else if (hasStarting) {
+      state = 'starting'
+    } else if (allStarted) {
+      state = 'started'
+      active = true
+    }
+    
+    return { active, state, hasPublishers: true }
+  }
+  
+  // No WebSocket data available yet - return safe default state
+  return defaultState
+})
+
+// Recording status (still mock for now - will be implemented in future)
+const recordingStatus = ref({
+  active: false
+})
+
+/*
+  USER FEEDBACK SYSTEM
+  ====================
+  PATTERN: Use floating overlays for ALL user feedback (never layout-shifting alerts)
+  - Success: Green for completed actions (start/stop streaming)
+  - Error: Red for failures (API errors, network issues)
+  - Info: Blue for informational messages (no publishers available)
+  - Auto-dismiss: 3 seconds (configurable)
+  - Manual close: Always provide X button
+*/
+const userMessage = ref<string | null>(null)
+const userMessageType = ref<'success' | 'error' | 'info'>('info')
+
+// Show temporary user message with floating overlay (NEVER use layout-shifting alerts)
+const showUserMessage = (message: string, type: 'success' | 'error' | 'info' = 'info', duration = 3000) => {
+  userMessage.value = message
+  userMessageType.value = type
+  setTimeout(() => {
+    userMessage.value = null
+  }, duration)
+}
+
+// Control functions with real API calls
+const toggleStreaming = async () => {
+  if (!selectedChannel.value) {
+    console.warn('No channel selected')
+    showUserMessage('Please select a channel first', 'info')
+    return
+  }
+
+  // Check if channel has publishers
+  if (!hasPublishers.value) {
+    console.warn(`Channel ${selectedChannel.value} has no publishers configured`)
+    showUserMessage(`Channel ${selectedChannel.value} has no publishers to stream`, 'info')
+    return
+  }
+
+  const deviceName = props.device.name || props.device.ip
+  console.log(`🎥 Toggle streaming for ${deviceName} channel ${selectedChannel.value}`)
+  console.log(`Current state: ${streamingStatus.value.state}`)
+  
+  try {
+    if (streamingStatus.value.active) {
+      // Stop streaming
+      const success = await stopPublishers()
+      if (success) {
+        console.log(`✅ Successfully stopped streaming for ${deviceName} channel ${selectedChannel.value}`)
+        showUserMessage('Streaming stopped', 'success')
+      } else {
+        console.error(`❌ Failed to stop streaming: ${publisherError.value}`)
+        showUserMessage(`Failed to stop streaming: ${publisherError.value}`, 'error')
+      }
+    } else {
+      // Start streaming
+      const success = await startPublishers()
+      if (success) {
+        console.log(`✅ Successfully started streaming for ${deviceName} channel ${selectedChannel.value}`)
+        showUserMessage('Streaming started', 'success')
+      } else {
+        console.error(`❌ Failed to start streaming: ${publisherError.value}`)
+        showUserMessage(`Failed to start streaming: ${publisherError.value}`, 'error')
+      }
+    }
+  } catch (err) {
+    console.error('Error toggling streaming:', err)
+    showUserMessage('An unexpected error occurred', 'error')
+  }
+}
+
+const toggleRecording = () => {
+  // TODO: Implement actual recording start/stop API calls
+  recordingStatus.value.active = !recordingStatus.value.active
+  console.log(`📹 ${recordingStatus.value.active ? 'Started' : 'Stopped'} recording for ${props.device.name || props.device.ip}`)
+}
+
+// Simple audio control - can only toggle when channel is selected
+const canToggleAudio = computed(() => {
+  return selectedChannel.value !== null && selectedChannel.value !== ''
+})
+
+const initializeAudioForChannel = async () => {
+  if (!selectedChannel.value) return false
+  
+  try {
+    // Clean up existing instance
+    if (audioStreamingInstance.value) {
+      audioStreamingInstance.value.unsubscribe()
+      audioStreamingInstance.value = null
+    }
+    
+    // Create new audio streaming instance for current channel
+    audioStreamingInstance.value = useAudioStreaming({
+      device: props.device.ip,
+      channel: parseInt(selectedChannel.value),
+      autoStart: false // Always start with streaming disabled
+    })
+    
+    // Initialize the WebSocket connection and subscribe to audio stream
+    console.log(`🎵 Subscribing to audio stream for ${props.device.ip}:${selectedChannel.value}`)
+    await audioStreamingInstance.value.subscribe()
+    
+    // The composable starts muted by default, so our state should match
+    console.log(`🎵 Initialized audio for ${props.device.ip}:${selectedChannel.value} (starts muted)`)
+    return true
+  } catch (error) {
+    console.error('❌ Failed to initialize audio:', error)
+    return false
+  }
+}
+
+const toggleAudioMute = async () => {
+  console.log(`🎵 toggleAudioMute - Channel: ${selectedChannel.value}, Muted: ${isAudioMuted.value}`)
+  
+  // Do nothing if no channel selected
+  if (!canToggleAudio.value) {
+    console.log('🎵 No channel selected - button does nothing')
+    return
+  }
+  
+  // Initialize audio instance if needed
+  if (!audioStreamingInstance.value) {
+    console.log('🎵 Initializing audio for first time')
+    const success = await initializeAudioForChannel()
+    if (!success) {
+      console.error('❌ Failed to initialize audio')
+      showUserMessage('Failed to initialize audio', 'error')
+      return
+    }
+  }
+  
+  try {
+    if (isAudioMuted.value) {
+      // Unmute - ensure subscription is active
+      console.log('🎵 Unmuting audio - ensuring subscription is active')
+      
+      // Make sure we're subscribed (should already be from initialization)
+      if (audioStreamingInstance.value.subscribe && !audioStreamingInstance.value.isSubscribed?.value) {
+        console.log('🎵 Not subscribed yet, subscribing now...')
+        await audioStreamingInstance.value.subscribe()
+      }
+      
+      // Get current audio context state
+      const audioContext = audioStreamingInstance.value.audioContext?.value
+      if (audioContext) {
+        console.log(`🎵 Audio context state: ${audioContext.state}`)
+        
+        // Resume context if needed (user interaction)
+        if (audioContext.state === 'suspended') {
+          console.log('🎵 Resuming suspended audio context...')
+          await audioContext.resume()
+          console.log('✅ Audio context resumed')
+        }
+      }
+      
+      // Simple unmute
+      console.log('🎵 Setting volume to 1 (unmuted)')
+      if (audioStreamingInstance.value.setVolume) {
+        audioStreamingInstance.value.setVolume(1)
+      }
+      
+      if (audioStreamingInstance.value.unmute) {
+        audioStreamingInstance.value.unmute()
+      }
+      
+      // Update our state
+      isAudioMuted.value = false
+      
+      console.log('✅ Audio unmuted')
+      showUserMessage('Audio unmuted', 'success', 1500)
+      
+    } else {
+      // Mute - simple approach
+      console.log('🎵 Muting audio')
+      
+      if (audioStreamingInstance.value.setVolume) {
+        audioStreamingInstance.value.setVolume(0)
+      }
+      
+      if (audioStreamingInstance.value.mute) {
+        audioStreamingInstance.value.mute()
+      }
+      
+      isAudioMuted.value = true
+      
+      console.log('✅ Audio muted')
+      showUserMessage('Audio muted', 'info', 1500)
+    }
+  } catch (error) {
+    console.error('❌ Failed to toggle audio:', error)
+    console.error('❌ Error details:', error)
+    
+    showUserMessage('Audio toggle failed', 'error')
+  }
+}
+
+// Last updated timestamp
+const lastUpdated = computed(() => {
+  return new Date().toLocaleString()
+})
+
+// Remove device handler
+const removeDevice = () => {
+  emit('remove', props.device.id)
+}
+
+// Fullscreen toggle handler
+const toggleFullscreen = () => {
+  emit('toggleFullscreen', props.device.id)
+}
+
+// Stream Tab - Pagination State and Computed Properties
+const currentPage = ref(1)
+const itemsPerPage = 5 // Compact space requires small page size
+
+// Hybrid publishers list - uses real-time data when available, fallback otherwise
+const enhancedPublishers = computed(() => {
+  // PRIORITY 1: Use WebSocket data if connected and available
+  if (realtimeConnected.value && 
+      realtimePublisherData.value && 
+      realtimePublisherData.value.publishers &&
+      Array.isArray(realtimePublisherData.value.publishers)) {
+    return realtimePublisherData.value.publishers
+  }
+  
+  // PRIORITY 2: Use HTTP data for initial load only (before WebSocket data arrives)
+  if (httpPublishers.value && httpPublishers.value.length > 0) {
+    return httpPublishers.value
+  }
+  
+  // PRIORITY 3: Fallback to channel publishers (initial load)
+  if (selectedChannel.value) {
+    const channel = findChannel(selectedChannel.value)
+    if (channel?.publishers && Array.isArray(channel.publishers)) {
+      return channel.publishers
+    }
+  }
+  
+  return []
+})
+
+const totalPages = computed(() => {
+  return Math.ceil(enhancedPublishers.value.length / itemsPerPage)
+})
+
+const paginatedPublishers = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage
+  return enhancedPublishers.value.slice(start, start + itemsPerPage)
+})
+
+// Reactive key generator for forcing Vue re-renders when real-time data updates
+const getPublisherKey = (publisher: any) => {
+  const baseKey = `${publisher.id}-${selectedChannel.value}`
+  // Include real-time data timestamp to force re-render when data updates
+  const timestamp = realtimeLastUpdated.value?.getTime() || Date.now()
+  return `${baseKey}-${timestamp}`
+}
+
+// Stream Tab - Publisher Status Helper Functions
+interface Publisher {
+  id: string
+  name?: string
+  type?: string
+  status?: {
+    state: 'started' | 'starting' | 'stopping' | 'stopped'
+    started: boolean
+    is_configured?: boolean
+  }
+}
+
+const getPublisherStatusColor = (publisher: Publisher) => {
+  if (!publisher.status) return 'grey'
+  
+  switch (publisher.status.state) {
+    case 'started':
+      return 'success'
+    case 'starting':
+    case 'stopping':
+      return 'warning'
+    case 'stopped':
+      return publisher.status.is_configured ? 'error' : 'grey'
+    default:
+      return 'grey'
+  }
+}
+
+const getPublisherIcon = (publisher: Publisher) => {
+  if (!publisher.status) return 'mdi-help-circle'
+  
+  switch (publisher.status.state) {
+    case 'started':
+      return 'mdi-broadcast'
+    case 'starting':
+      return 'mdi-loading mdi-spin'
+    case 'stopping':
+      return 'mdi-loading mdi-spin'
+    case 'stopped':
+      return 'mdi-broadcast-off'
+    default:
+      return 'mdi-help-circle'
+  }
+}
+
+const getPublisherStatusText = (publisher: Publisher) => {
+  if (!publisher.status) return 'Unknown'
+  
+  switch (publisher.status.state) {
+    case 'started':
+      return 'Streaming'
+    case 'starting':
+      return 'Starting...'
+    case 'stopping':
+      return 'Stopping...'
+    case 'stopped':
+      return publisher.status.is_configured ? 'Stopped' : 'Not Configured'
+    default:
+      return 'Unknown'
+  }
+}
+
+// Stream Tab - Individual Publisher Control
+const toggleIndividualPublisher = async (publisher: Publisher) => {
+  // TODO: Implement individual publisher control API endpoints
+  console.log(`🎮 Toggle individual publisher: ${publisher.name} (${publisher.id})`)
+  console.log(`Current state: ${publisher.status?.state || 'unknown'}`)
+  
+  // For now, show a message that this feature is coming soon
+  showUserMessage(`Individual publisher control for "${publisher.name}" will be available in a future update`, 'info', 5000)
+}
+</script>
+
+<style scoped>
+/*
+  STYLING GUIDELINES FOR FUTURE CLAUDE ITERATIONS:
+  ================================================
+  
+  1. LAYOUT STABILITY PRINCIPLES:
+     - Use relative positioning for containers that need overlays
+     - Use absolute positioning for floating elements
+     - Never use margin/padding changes for animations
+     - Maintain consistent z-index hierarchy
+  
+  2. ANIMATION STANDARDS:
+     - Fade in: 0.3s ease-out (gentle, welcoming)
+     - Fade out: 0.2s ease-in (quick, unobtrusive)
+     - Subtle transforms: translateY(-10px to 0) for entry
+     - Backdrop blur: 4px for modern overlay effect
+  
+  3. THEME COMPATIBILITY:
+     - Always provide light/dark theme variants
+     - Use rgba() for transparency with theme adaptation
+     - Test contrast ratios for accessibility
+  
+  4. RESPONSIVE DESIGN:
+     - Mobile-first approach with @media queries
+     - Maintain touch-friendly button sizes
+     - Preserve overlay functionality on all screen sizes
+*/
+
+.pearl-device-card {
+  height: 500px; /* Fixed height prevents content jumping */
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fixed height tab content container */
+.tab-content-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.tab-content-window {
+  height: 100%;
+}
+
+/* Scrollable content for all tab content */
+.scrollable-content {
+  height: 100%;
+  overflow-y: auto;
+  padding-right: 4px; /* Space for scrollbar */
+}
+
+/* Modern scrollbar styling */
+.scrollable-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollable-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollable-content::-webkit-scrollbar-thumb {
+  background: rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 3px;
+}
+
+.scrollable-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--v-theme-on-surface), 0.3);
+}
+
+/* Empty state styling for consistent spacing */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2rem;
+  min-height: 200px;
+}
+
+.channel-select {
+  flex-shrink: 0;
+}
+
+.preview-container {
+  min-height: 300px;
+}
+
+/* 16:9 Aspect Ratio Container */
+.aspect-ratio-container {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%; /* 16:9 aspect ratio - NEVER changes */
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface-variant));
+  /* Remove interfering properties that break aspect ratio */
+}
+
+.aspect-ratio-placeholder {
+  border: 2px dashed rgb(var(--v-theme-outline-variant));
+}
+
+.preview-wrapper {
+  flex: 1 1 0%;
+  min-width: 280px;
+  max-width: 100%;
+}
+
+
+.preview-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.preview-content img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* Maintain image aspect ratio, letterbox if needed */
+  display: block;
+}
+
+.audio-meter-wrapper {
+  height: auto;
+  align-self: stretch;
+  flex-shrink: 0;
+  width: 44px;
+}
+
+.audio-meter-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  background: rgb(var(--v-theme-surface-variant));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed rgb(var(--v-theme-outline-variant));
+}
+
+.controls-section {
+  margin-top: 0;
+  padding-top: 0;
+  position: relative; /* For absolute positioning of overlay */
+}
+
+/* 
+  FLOATING MESSAGE OVERLAY SYSTEM
+  ===============================
+  CRITICAL: This pattern should be used for ALL user feedback in future components
+  
+  Key principles:
+  - Absolute positioning prevents layout shifts
+  - High z-index ensures visibility
+  - Backdrop blur creates modern overlay effect
+  - Theme-aware backgrounds maintain consistency
+  - Smooth transitions enhance user experience
+*/
+.user-message-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(4px);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.v-theme--dark .user-message-overlay {
+  background: rgba(33, 33, 33, 0.95);
+}
+
+/* 
+  ANIMATION TRANSITIONS
+  ====================
+  Standard timing for professional UX:
+  - Enter: 0.3s ease-out (welcoming, gentle)
+  - Leave: 0.2s ease-in (quick, unobtrusive)
+  - Transform: Subtle slide for natural feel
+*/
+.fade-message-enter-active {
+  transition: all 0.3s ease-out;
+}
+
+.fade-message-leave-active {
+  transition: all 0.2s ease-in;
+}
+
+.fade-message-enter-from {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.fade-message-leave-to {
+  opacity: 0;
+  transform: translateY(-5px);
+}
+
+.status-container {
+  min-height: 300px;
+}
+
+/* Theme-aware styling */
+.v-theme--dark .aspect-ratio-container {
+  background: rgb(var(--v-theme-surface-bright));
+}
+
+.v-theme--light .aspect-ratio-container {
+  background: rgb(var(--v-theme-surface-container-lowest));
+}
+
+.v-theme--dark .audio-meter-placeholder {
+  background: rgb(var(--v-theme-surface-bright));
+}
+
+.v-theme--light .audio-meter-placeholder {
+  background: rgb(var(--v-theme-surface-container-lowest));
+}
+
+/* Spinning animation for loading icons */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mdi-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 767px) {
+  .preview-wrapper {
+    min-width: 200px;
+  }
+  
+  .audio-meter-wrapper {
+    width: 36px;
+  }
+  
+  .preview-container {
+    min-height: 250px;
+  }
+  
+  .pearl-device-card {
+    width: 100%;
+    min-width: 280px;
+  }
+}
+</style>

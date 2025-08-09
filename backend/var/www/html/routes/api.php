@@ -1,0 +1,74 @@
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\DeviceController;
+use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\RealtimeController;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+|
+| Here is where you may register API routes for your application. These
+| are loaded by the RouteServiceProvider within a group which
+| is assigned the "api" middleware group. Enjoy building your API!
+|
+*/
+
+// JWT Authentication routes (API only - web uses different auth)
+Route::prefix('auth')->group(function () {
+    Route::post('login', [AuthController::class, 'login']);
+    Route::post('register', [AuthController::class, 'register']);
+    Route::post('refresh', [AuthController::class, 'refresh'])->middleware('auth:api');
+    Route::get('user-profile', [AuthController::class, 'userProfile'])->middleware('auth:api');
+});
+
+// SPA Authentication - Protected Routes (using web session auth)
+Route::middleware('auth:web')->group(function () {
+    
+    // Device Management
+    Route::apiResource('devices', DeviceController::class)
+         ->only(['index', 'store', 'destroy']);
+         
+    Route::get('/preferences', [DeviceController::class, 'getPreferences']);
+    Route::post('/preferences', [DeviceController::class, 'savePreferences']);
+    
+    // Device State API (preferred - uses cached backend state)
+    Route::prefix('device-state')->name('device-state.')->group(function () {
+        Route::get('/devices/{device}', [\App\Http\Controllers\Api\DeviceStateController::class, 'getDeviceState']);
+        Route::get('/devices/{device}/channels', [\App\Http\Controllers\Api\DeviceStateController::class, 'getDeviceChannels']);
+        Route::get('/devices/{device}/channels/{channel}/publishers/status', [\App\Http\Controllers\Api\DeviceStateController::class, 'getChannelPublisherStatus']);
+        Route::get('/devices/{device}/channels/{channel}/publishers/{publisher}/name', [\App\Http\Controllers\Api\DeviceStateController::class, 'getPublisherName']);
+        Route::post('/devices/{device}/channels/{channel}/publishers/control', [\App\Http\Controllers\Api\DeviceStateController::class, 'controlChannelPublishers']);
+        Route::post('/devices/{device}/force-poll', [\App\Http\Controllers\Api\DeviceStateController::class, 'forcePollDevice']);
+        Route::post('/devices/{device}/toggle-polling', [\App\Http\Controllers\Api\DeviceStateController::class, 'toggleDevicePolling']);
+        Route::get('/health', [\App\Http\Controllers\Api\DeviceStateController::class, 'getDevicesHealth']);
+    });
+
+    // Direct Proxy endpoints for Pearl Mini devices (for backward compatibility)
+    Route::get('/devices/{device}/channels', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannels']);
+    Route::get('/devices/{device}/channels/{channel}/preview', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannelPreview']);
+    Route::get('/devices/{device}/channels/{channel}/publishers/status', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getPublisherStatus']);
+    Route::get('/devices/{device}/channels/{channel}/publishers/{publisher}/name', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getPublisherName']);
+    Route::post('/devices/{device}/channels/{channel}/publishers/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startPublishers']);
+    Route::post('/devices/{device}/channels/{channel}/publishers/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopPublishers']);
+    
+    // Individual publisher control endpoints
+    Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startIndividualPublisher']);
+    Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopIndividualPublisher']);
+    
+    // WebSocket authentication token for authenticated users
+    Route::get('/auth/token', [AuthController::class, 'getWebSocketToken']);
+    
+    // Real-time event endpoints (for WebSocket service)
+    Route::prefix('realtime')->name('realtime.')->group(function () {
+        Route::get('/events', [RealtimeController::class, 'getEvents']);
+        Route::post('/events', [RealtimeController::class, 'storeEvent']); // For Node.js polling service
+        Route::get('/stats', [RealtimeController::class, 'getStats']);
+        Route::get('/health', [RealtimeController::class, 'health']);
+        Route::post('/cleanup', [RealtimeController::class, 'cleanup']);
+        Route::delete('/events', [RealtimeController::class, 'clearEvents']); // Admin only
+    });
+});

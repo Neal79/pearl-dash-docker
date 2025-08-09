@@ -1,0 +1,779 @@
+<template>
+  <v-card class="pearl-device-card" elevation="2">
+    <!-- Card Header with Channel Dropdown -->
+    <v-card-title class="d-flex align-center justify-space-between pb-2">
+      <div class="d-flex align-center">
+        <v-btn
+          :icon="isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-monitor'"
+          color="primary"
+          variant="text"
+          size="small"
+          class="mr-2"
+          @click="toggleFullscreen"
+          :title="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"
+        />
+        <span class="text-h6">{{ device.name || device.ip }}</span>
+      </div>
+      
+      <div class="d-flex align-center ga-2">
+        <!-- Channel Selection Dropdown -->
+        <v-select
+          v-model="selectedChannel"
+          :items="channelOptions"
+          item-title="name"
+          item-value="value"
+          label="Channel"
+          variant="outlined"
+          density="compact"
+          hide-details
+          class="channel-select"
+          prepend-inner-icon="mdi-video"
+          style="max-width: 150px;"
+          @update:model-value="onChannelChange"
+        />
+        
+        <!-- Remove Device Button (hidden in fullscreen) -->
+        <v-btn
+          v-if="!isFullscreen"
+          icon="mdi-close"
+          size="small"
+          variant="text"
+          color="error"
+          @click="removeDevice"
+        />
+      </div>
+    </v-card-title>
+
+    <v-divider />
+
+    <!-- Tab Navigation -->
+    <v-tabs
+      v-model="activeTab"
+      color="primary"
+      align-tabs="center"
+      class="px-4"
+    >
+      <v-tab value="preview">
+        <v-icon class="mr-2">mdi-eye</v-icon>
+        Preview
+      </v-tab>
+      <v-tab value="status">
+        <v-icon class="mr-2">mdi-information</v-icon>
+        Status
+      </v-tab>
+    </v-tabs>
+
+    <!-- Tab Content -->
+    <v-card-text class="pa-0">
+      <v-tabs-window v-model="activeTab">
+        <!-- Preview Tab -->
+        <v-tabs-window-item value="preview">
+          <div class="preview-container pa-3">
+            <div v-if="selectedChannel">
+              <!-- Preview and Audio Meter Layout -->
+              <div class="d-flex ga-2 mb-4">
+                <!-- 16:9 Preview Area -->
+                <div class="preview-wrapper flex-grow-1">
+                  <div class="aspect-ratio-container">
+                    <div class="preview-content">
+                      <!-- Still Image -->
+                      <img 
+                        v-if="currentDisplayUrl"
+                        :src="currentDisplayUrl" 
+                        :alt="`${device.name || device.ip} Channel ${selectedChannel}`"
+                        class="w-100 h-100"
+                        style="object-fit: cover;"
+                        @error="onImageError"
+                      />
+                      
+                      <!-- Loading placeholder -->
+                      <div 
+                        v-else
+                        class="d-flex align-center justify-center h-100"
+                      >
+                        <div class="text-center">
+                          <v-progress-circular 
+                            indeterminate 
+                            color="primary" 
+                            class="mb-2"
+                          />
+                          <div class="text-body-2 text-medium-emphasis">
+                            Loading preview...
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Audio Meter -->
+                <div class="audio-meter-wrapper d-flex align-center">
+                  <AudioMeter 
+                    :device="device.ip" 
+                    :channel="selectedChannel"
+                  />
+                </div>
+              </div>
+              
+              <!-- Streaming/Recording Controls -->
+              <div class="controls-section">
+                <v-divider class="mb-1" />
+                
+                <div class="d-flex align-center justify-space-between">
+                  <!-- Status Indicators -->
+                  <div class="d-flex align-center ga-4">
+                    <!-- Connection Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="connectionStatus === 'connected' ? 'success' : 
+                                connectionStatus === 'connecting' ? 'warning' : 'error'"
+                        size="16"
+                      >
+                        mdi-circle
+                      </v-icon>
+                      <span class="text-caption">
+                        {{ connectionStatus === 'connected' ? 'Connected' : 
+                           connectionStatus === 'connecting' ? 'Connecting' : 'Disconnected' }}
+                      </span>
+                    </div>
+                    
+                    <!-- Streaming Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="streamingStatus.active ? 'success' : 'grey'"
+                        size="20"
+                      >
+                        {{ streamingStatus.active ? 'mdi-broadcast' : 'mdi-broadcast-off' }}
+                      </v-icon>
+                      <span class="text-caption" :class="streamingStatus.active ? 'text-success' : 'text-medium-emphasis'">
+                        {{ streamingStatus.active ? 'Streaming' : 'Offline' }}
+                      </span>
+                    </div>
+                    
+                    <!-- Recording Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon 
+                        :color="recordingStatus.active ? 'error' : 'grey'"
+                        size="20"
+                      >
+                        {{ recordingStatus.active ? 'mdi-record-rec' : 'mdi-record' }}
+                      </v-icon>
+                      <span class="text-caption" :class="recordingStatus.active ? 'text-error' : 'text-medium-emphasis'">
+                        {{ recordingStatus.active ? 'Recording' : 'Stopped' }}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <!-- Control Buttons -->
+                  <div class="d-flex ga-2">
+                    <!-- Start/Stop Streaming -->
+                    <v-btn
+                      :color="streamingStatus.active ? 'error' : 'success'"
+                      :icon="streamingStatus.active ? 'mdi-stop' : 'mdi-play'"
+                      size="small"
+                      variant="tonal"
+                      @click="toggleStreaming"
+                    />
+                    
+                    <!-- Start/Stop Recording -->
+                    <v-btn
+                      :color="recordingStatus.active ? 'error' : 'error'"
+                      :icon="recordingStatus.active ? 'mdi-stop' : 'mdi-record'"
+                      size="small"
+                      variant="tonal"
+                      @click="toggleRecording"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- No Channel Selected -->
+            <div v-else>
+              <!-- Preview and Audio Meter Layout with Placeholder -->
+              <div class="d-flex ga-2 mb-4">
+                <!-- 16:9 Placeholder Area -->
+                <div class="preview-wrapper flex-grow-1">
+                  <div class="aspect-ratio-container aspect-ratio-placeholder">
+                    <div class="preview-content d-flex align-center justify-center">
+                      <div class="text-center">
+                        <v-icon size="64" color="grey-lighten-1" class="mb-3">
+                          mdi-video-outline
+                        </v-icon>
+                        <div class="text-h6 text-medium-emphasis mb-2">
+                          {{ device.name || device.ip }}
+                        </div>
+                        <div class="text-body-2 text-medium-emphasis">
+                          Select a channel to view preview
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Audio Meter Placeholder -->
+                <div class="audio-meter-wrapper d-flex align-center justify-center">
+                  <div class="audio-meter-placeholder">
+                    <v-icon color="grey-lighten-1" size="24">
+                      mdi-volume-off
+                    </v-icon>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Controls Section (Disabled State) -->
+              <div class="controls-section">
+                <v-divider class="mb-1" />
+                
+                <div class="d-flex align-center justify-space-between">
+                  <!-- Status Indicators (Disabled) -->
+                  <div class="d-flex align-center ga-4">
+                    <!-- Connection Status -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="16">
+                        mdi-circle
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        No Channel
+                      </span>
+                    </div>
+                    
+                    <!-- Streaming Status (Disabled) -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="20">
+                        mdi-broadcast-off
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        Offline
+                      </span>
+                    </div>
+                    
+                    <!-- Recording Status (Disabled) -->
+                    <div class="d-flex align-center ga-1">
+                      <v-icon color="grey" size="20">
+                        mdi-record
+                      </v-icon>
+                      <span class="text-caption text-medium-emphasis">
+                        Stopped
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <!-- Control Buttons (Disabled) -->
+                  <div class="d-flex ga-2">
+                    <v-btn
+                      icon="mdi-play"
+                      size="small"
+                      variant="tonal"
+                      color="grey"
+                      disabled
+                    />
+                    <v-btn
+                      icon="mdi-record"
+                      size="small"
+                      variant="tonal"
+                      color="grey"
+                      disabled
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </v-tabs-window-item>
+
+        <!-- Status Tab -->
+        <v-tabs-window-item value="status">
+          <div class="status-container pa-3">
+            <v-list lines="two" density="compact">
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon 
+                    :color="connectionStatus === 'connected' ? 'success' : 'error'"
+                    :icon="connectionStatus === 'connected' ? 'mdi-check-circle' : 'mdi-alert-circle'"
+                  />
+                </template>
+                <v-list-item-title>Device Status</v-list-item-title>
+                <v-list-item-subtitle>
+                  {{ connectionStatus === 'connected' ? 'Online' : 'Offline' }}
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon color="info" icon="mdi-ip-network" />
+                </template>
+                <v-list-item-title>IP Address</v-list-item-title>
+                <v-list-item-subtitle>
+                  <a 
+                    :href="`http://${device.ip}`" 
+                    target="_blank" 
+                    class="text-blue-lighten-2 text-decoration-none"
+                  >
+                    {{ device.ip }}
+                  </a>
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="device.name">
+                <template v-slot:prepend>
+                  <v-icon color="primary" icon="mdi-rename-box" />
+                </template>
+                <v-list-item-title>Device Name</v-list-item-title>
+                <v-list-item-subtitle>{{ device.name }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="selectedChannel">
+                <template v-slot:prepend>
+                  <v-icon color="primary" icon="mdi-video-input-component" />
+                </template>
+                <v-list-item-title>Active Channel</v-list-item-title>
+                <v-list-item-subtitle>Channel {{ selectedChannel }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon color="secondary" icon="mdi-clock-outline" />
+                </template>
+                <v-list-item-title>Last Updated</v-list-item-title>
+                <v-list-item-subtitle>{{ lastUpdated }}</v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item>
+                <template v-slot:prepend>
+                  <v-icon 
+                    :color="channelMode === 'dynamic' ? 'success' : channelMode === 'loading' ? 'warning' : 'info'"
+                    :icon="channelMode === 'dynamic' ? 'mdi-api' : channelMode === 'loading' ? 'mdi-loading' : 'mdi-backup-restore'"
+                  />
+                </template>
+                <v-list-item-title>Channel Source</v-list-item-title>
+                <v-list-item-subtitle>
+                  {{ channelMode === 'dynamic' ? `API (${channels?.length || 0} channels)` : 
+                     channelMode === 'loading' ? 'Loading...' : 'Fallback (4 channels)' }}
+                </v-list-item-subtitle>
+              </v-list-item>
+
+              <v-list-item v-if="channelsError">
+                <template v-slot:prepend>
+                  <v-icon color="error" icon="mdi-alert-circle" />
+                </template>
+                <v-list-item-title>Channel API Error</v-list-item-title>
+                <v-list-item-subtitle>{{ channelsError }}</v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </div>
+        </v-tabs-window-item>
+      </v-tabs-window>
+    </v-card-text>
+  </v-card>
+</template>
+
+<script setup lang="ts">
+// @claude: ALWAYS make a backup of this file before making changes
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useAudioMeterWebSocket } from '../composables/useAudioMeterWebSocket'
+import { useDeviceChannels } from '../composables/useDeviceChannels'
+import AudioMeter from './AudioMeter.vue'
+
+interface Device {
+  id: number
+  name?: string
+  ip: string
+}
+
+interface Props {
+  device: Device
+  showDebug?: boolean
+  isFullscreen?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  showDebug: false,
+  isFullscreen: false
+})
+
+const emit = defineEmits<{
+  remove: [id: number]
+  toggleFullscreen: [id: number]
+}>()
+
+// Dynamic channel management using the new composable
+const { 
+  channels,
+  loading: channelsLoading,
+  error: channelsError,
+  channelOptions: dynamicChannelOptions,
+  hasChannels,
+  connectionStatus: channelsConnectionStatus,
+  fetchChannels,
+  startPolling,
+  stopPolling,
+  findChannel,
+  getPrimaryPublisher,
+  isChannelStreaming
+} = useDeviceChannels(props.device.id)
+
+// Fallback to hardcoded channels if API fails
+const fallbackChannels = [1, 2, 3, 4]
+const fallbackChannelOptions = computed(() => [
+  { name: 'Select Channel', value: '' },
+  ...fallbackChannels.map(ch => ({ name: `Channel ${ch}`, value: ch.toString() }))
+])
+
+// Use dynamic channels if available, otherwise fallback
+const channelOptions = computed(() => {
+  return hasChannels.value ? dynamicChannelOptions.value : fallbackChannelOptions.value
+})
+
+// Determine which channel mode we're using
+const channelMode = computed(() => {
+  if (channelsLoading.value) return 'loading'
+  if (hasChannels.value) return 'dynamic'
+  return 'fallback'
+})
+
+// Create a unique storage key for this device
+const getStorageKey = () => `pearlDeviceCard_channel_${props.device.id}`
+
+// Load saved channel from localStorage
+const loadSavedChannel = (): string | '' => {
+  try {
+    const saved = localStorage.getItem(getStorageKey())
+    if (saved && saved !== '') {
+      return saved
+    }
+  } catch (error) {
+    console.warn('Failed to load saved channel from localStorage:', error)
+  }
+  return ''
+}
+
+// Save channel to localStorage
+const saveChannel = (channel: string | '') => {
+  try {
+    const key = getStorageKey()
+    if (channel === '') {
+      localStorage.removeItem(key)
+    } else {
+      localStorage.setItem(key, channel)
+    }
+  } catch (error) {
+    console.warn('Failed to save channel to localStorage:', error)
+  }
+}
+
+// Initialize selectedChannel with saved value
+const selectedChannel = ref<string | ''>(loadSavedChannel())
+const activeTab = ref('preview')
+
+// WebSocket connection for audio meters  
+const { connected, connecting } = useAudioMeterWebSocket()
+
+// Computed connection status (combines WebSocket and channel API status)
+const connectionStatus = computed(() => {
+  // If actively loading channels, show connecting
+  if (channelsLoading.value) return 'connecting'
+  
+  // If channel API has error, show disconnected
+  if (channelsError.value) return 'disconnected'
+  
+  // If we have channels data, show connected
+  if (hasChannels.value) return 'connected'
+  
+  // Fallback to WebSocket status
+  if (connected.value) return 'connected'
+  if (connecting.value) return 'connecting'
+  return 'disconnected'
+})
+
+// Still image URL using proxy API
+const stillImageUrl = computed(() => {
+  if (!selectedChannel.value) return ''
+  return `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+})
+
+// Seamless image loading system
+const currentDisplayUrl = ref('')
+
+// Function to preload and seamlessly switch images
+const loadNewImage = (url: string): Promise<void> => {
+  return new Promise<void>((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      // Only update the display URL after the image is fully loaded
+      currentDisplayUrl.value = url
+      resolve()
+    }
+    img.onerror = () => {
+      reject(new Error('Failed to load image'))
+    }
+    img.src = url
+  })
+}
+
+// Refresh image with seamless transition
+const refreshImage = async () => {
+  if (!selectedChannel.value) return
+  
+  const newUrl = `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+  
+  try {
+    await loadNewImage(newUrl)
+  } catch (error) {
+    console.warn(`🖼️ Failed to load still image for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+    // On error, set fallback image
+    const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+    currentDisplayUrl.value = fallbackUrl
+  }
+}
+
+// Handle image error
+const onImageError = () => {
+  console.warn(`🖼️ Image error for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+  const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+  currentDisplayUrl.value = fallbackUrl
+}
+
+// Auto-refresh image every 10 seconds
+let imageRefreshInterval: any
+
+// Initialize image loading
+const initializeImage = async () => {
+  if (!selectedChannel.value) return
+  
+  const initialUrl = `/api/devices/${props.device.id}/channels/${selectedChannel.value}/preview?_=${Date.now()}`
+  
+  try {
+    await loadNewImage(initialUrl)
+  } catch (error) {
+    console.warn(`🖼️ Failed to load initial image for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+    const fallbackUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzc0MTUxIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzlDQTNBRiI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+'
+    currentDisplayUrl.value = fallbackUrl
+  }
+}
+
+onMounted(async () => {
+  try {
+    // Fetch available channels from the device
+    await fetchChannels()
+    
+    // Start polling for status updates
+    startPolling(30000) // Poll every 30 seconds
+    
+    // Initialize image if we have a selected channel
+    if (selectedChannel.value) {
+      await initializeImage()
+      imageRefreshInterval = setInterval(refreshImage, 10000)
+    }
+  } catch (error) {
+    console.error('Error in onMounted:', error)
+  }
+})
+
+onBeforeUnmount(() => {
+  // Stop polling
+  stopPolling()
+  
+  // Clear image refresh interval
+  if (imageRefreshInterval) {
+    clearInterval(imageRefreshInterval)
+  }
+})
+
+// Watch for channels being loaded to validate saved selection
+watch(channels, (newChannels) => {
+  if (newChannels && newChannels.length > 0 && selectedChannel.value) {
+    // Check if saved channel still exists
+    const channelExists = newChannels.some(ch => ch.id === selectedChannel.value)
+    if (!channelExists) {
+      console.warn(`Saved channel ${selectedChannel.value} no longer exists, clearing selection`)
+      selectedChannel.value = ''
+    }
+  }
+})
+
+// Watch for channel changes and persist to localStorage
+watch(selectedChannel, async (newChannel) => {
+  // Save to localStorage
+  saveChannel(newChannel)
+  
+  // Handle image refresh interval
+  if (imageRefreshInterval) {
+    clearInterval(imageRefreshInterval)
+  }
+  if (selectedChannel.value) {
+    currentDisplayUrl.value = '' // Clear current image
+    await initializeImage()
+    imageRefreshInterval = setInterval(refreshImage, 10000)
+  } else {
+    currentDisplayUrl.value = ''
+  }
+})
+
+// Handle channel change
+const onChannelChange = () => {
+  console.log(`📺 Channel changed to ${selectedChannel.value} for device ${props.device.name || props.device.ip}`)
+}
+
+// Streaming status from real channel data
+const streamingStatus = computed(() => {
+  if (!selectedChannel.value) {
+    return { active: false, state: 'stopped' }
+  }
+  const publisher = getPrimaryPublisher(selectedChannel.value)
+  return {
+    active: publisher?.status?.started || false,
+    state: publisher?.status?.state || 'stopped'
+  }
+})
+
+// Recording status (still mock for now - will be implemented in future)
+const recordingStatus = ref({
+  active: false
+})
+
+// Control functions (future implementation)
+const toggleStreaming = () => {
+  // TODO: Implement actual publisher start/stop API calls
+  console.log(`🎥 Toggle streaming for ${props.device.name || props.device.ip} channel ${selectedChannel.value}`)
+  console.log(`Current state: ${streamingStatus.value.state}`)
+}
+
+const toggleRecording = () => {
+  // TODO: Implement actual recording start/stop API calls
+  recordingStatus.value.active = !recordingStatus.value.active
+  console.log(`📹 ${recordingStatus.value.active ? 'Started' : 'Stopped'} recording for ${props.device.name || props.device.ip}`)
+}
+
+// Last updated timestamp
+const lastUpdated = computed(() => {
+  return new Date().toLocaleString()
+})
+
+// Remove device handler
+const removeDevice = () => {
+  emit('remove', props.device.id)
+}
+
+// Fullscreen toggle handler
+const toggleFullscreen = () => {
+  emit('toggleFullscreen', props.device.id)
+}
+</script>
+
+<style scoped>
+.pearl-device-card {
+  min-height: 400px;
+  width: 100%;
+}
+
+.channel-select {
+  flex-shrink: 0;
+}
+
+.preview-container {
+  min-height: 300px;
+}
+
+/* 16:9 Aspect Ratio Container */
+.aspect-ratio-container {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%; /* 16:9 aspect ratio - NEVER changes */
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface-variant));
+  /* Remove interfering properties that break aspect ratio */
+}
+
+.aspect-ratio-placeholder {
+  border: 2px dashed rgb(var(--v-theme-outline-variant));
+}
+
+.preview-wrapper {
+  flex: 1 1 0%;
+  min-width: 280px;
+  max-width: 100%;
+}
+
+
+.preview-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.preview-content img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* Maintain image aspect ratio, letterbox if needed */
+  display: block;
+}
+
+.audio-meter-wrapper {
+  height: auto;
+  align-self: stretch;
+  flex-shrink: 0;
+  width: 44px;
+}
+
+.audio-meter-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  background: rgb(var(--v-theme-surface-variant));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed rgb(var(--v-theme-outline-variant));
+}
+
+.controls-section {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.status-container {
+  min-height: 300px;
+}
+
+/* Theme-aware styling */
+.v-theme--dark .aspect-ratio-container {
+  background: rgb(var(--v-theme-surface-bright));
+}
+
+.v-theme--light .aspect-ratio-container {
+  background: rgb(var(--v-theme-surface-container-lowest));
+}
+
+.v-theme--dark .audio-meter-placeholder {
+  background: rgb(var(--v-theme-surface-bright));
+}
+
+.v-theme--light .audio-meter-placeholder {
+  background: rgb(var(--v-theme-surface-container-lowest));
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 767px) {
+  .preview-wrapper {
+    min-width: 200px;
+  }
+  
+  .audio-meter-wrapper {
+    width: 36px;
+  }
+  
+  .preview-container {
+    min-height: 250px;
+  }
+  
+  .pearl-device-card {
+    width: 100%;
+    min-width: 280px;
+  }
+}
+</style>

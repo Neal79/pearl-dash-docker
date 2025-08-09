@@ -1,0 +1,359 @@
+// @claude: protected logic, do not modify without CLAUDE.md review section
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { useAuth } from './useAuth.js'
+// Singleton instance to prevent multiple WebSocket connections
+let wsInstance = null
+let componentCount = 0 // Track how many components are using the connection
+
+export function useAudioMeterWebSocket(serverUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/audio-meter`) {
+  componentCount++ // Increment when a new component uses this
+  console.log(`🧮 Component count: ${componentCount}`)
+  
+  // Return existing instance if available
+  if (wsInstance) {
+    console.log('🔄 Reusing existing WebSocket instance')
+    return wsInstance
+  }
+  
+  console.log('🆕 Creating new WebSocket instance')
+  
+  const ws = ref(null)
+  const connected = ref(false)
+  const connecting = ref(false)
+  const error = ref(null)
+  const clientId = ref(null)
+  const authenticatedUser = ref(null)
+  
+  // Initialize authentication
+  const auth = useAuth()
+  
+  // Reactive store for all meter data
+  const meterData = reactive(new Map())
+  const subscriptions = ref(new Set())
+  
+  // Queue for messages sent before connection is ready
+  const messageQueue = ref([])
+  
+  const connect = async () => {
+    if (ws.value || connecting.value) {
+      console.log(`🔍 AudioMeter connect() called but skipping - ws: ${!!ws.value}, connecting: ${connecting.value}`)
+      return
+    }
+    
+    connecting.value = true
+    error.value = null
+    
+    console.log('🔌 AudioMeter connecting to Audio Meter Service:', serverUrl)
+    
+    try {
+      // Get JWT token for authentication
+      console.log('🔑 Getting JWT token for WebSocket authentication...')
+      const token = await auth.getValidToken()
+      
+      if (!token) {
+        console.log('❌ AudioMeter: No JWT token available - will retry in 1 second')
+        error.value = null // Don't treat this as an error
+        connecting.value = false
+        // Retry connection after a delay
+        setTimeout(async () => {
+          console.log('🔄 AudioMeter: Retrying connection after token delay')
+          await connect()
+        }, 1000)
+        return
+      }
+      
+      console.log('✅ AudioMeter: Got JWT token, proceeding with connection')
+      
+      // Create WebSocket URL with token as query parameter
+      // Note: Browser WebSocket API doesn't support custom headers, so we use query params
+      const wsUrl = new URL(serverUrl)
+      wsUrl.searchParams.set('token', token)
+      
+      console.log('🔌 Establishing authenticated WebSocket connection with token...')
+      console.log('🔗 WebSocket URL:', wsUrl.toString().replace(/token=[^&]+/, 'token=***'))
+      
+      // Set a connection timeout
+      let connectionTimeout = null
+      
+      // Create WebSocket with token in query parameters
+      ws.value = new WebSocket(wsUrl.toString())
+      
+      connectionTimeout = setTimeout(() => {
+        if (connecting.value) {
+          console.error('❌ WebSocket connection timeout')
+          error.value = 'Connection timeout'
+          connecting.value = false
+          if (ws.value) {
+            ws.value.close()
+            ws.value = null
+          }
+        }
+      }, 10000) // 10 second timeout
+      
+      ws.value.onopen = () => {
+        if (connectionTimeout) clearTimeout(connectionTimeout)
+        console.log('✅ AudioMeter WebSocket connection opened successfully')
+        connected.value = true
+        connecting.value = false
+        error.value = null
+        
+        // Process queued messages
+        while (messageQueue.value.length > 0) {
+          const queuedMessage = messageQueue.value.shift()
+          console.log('📤 Sending queued message:', queuedMessage)
+          sendMessage(queuedMessage)
+        }
+      }
+      
+      ws.value.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data)
+          handleMessage(message)
+        } catch (err) {
+          console.error('❌ Failed to parse WebSocket message:', err)
+        }
+      }
+      
+      ws.value.onclose = (event) => {
+        if (connectionTimeout) clearTimeout(connectionTimeout)
+        console.log('🔌 WebSocket connection closed:', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          url: serverUrl
+        })
+        connected.value = false
+        connecting.value = false
+        authenticatedUser.value = null
+        
+        // Handle authentication-related closures
+        if (event.code === 1008) { // Policy Violation (auth failure)
+          console.warn('🔒 WebSocket closed due to authentication failure')
+          error.value = 'Authentication failed: ' + (event.reason || 'Invalid or expired token')
+          auth.handleAuthError(new Error('WebSocket authentication failed'))
+          return // Don't auto-reconnect on auth failures
+        }
+        
+        // Auto-reconnect after delay for other failures
+        if (!event.wasClean) {
+          setTimeout(async () => {
+            if (!connected.value) {
+              try {
+                await connect()
+              } catch (err) {
+                console.error('❌ Reconnection failed:', err)
+              }
+            }
+          }, 2000)
+        }
+      }
+      
+      ws.value.onerror = (event) => {
+        if (connectionTimeout) clearTimeout(connectionTimeout)
+        console.error('❌ WebSocket error:', event)
+        console.error('❌ WebSocket error details:', {
+          url: serverUrl,
+          readyState: ws.value?.readyState,
+          protocol: ws.value?.protocol,
+          extensions: ws.value?.extensions
+        })
+        error.value = 'WebSocket connection error'
+        connecting.value = false
+      }
+      
+    } catch (err) {
+      if (connectionTimeout) clearTimeout(connectionTimeout)
+      console.error('❌ Failed to create WebSocket:', err)
+      
+      // Handle authentication errors
+      if (err.message && err.message.includes('Authentication failed')) {
+        auth.handleAuthError(err)
+      }
+      
+      error.value = err.message
+      connecting.value = false
+    }
+  }
+  
+  const disconnect = () => {
+    if (ws.value) {
+      ws.value.close(1000, 'Client disconnect')
+      ws.value = null
+    }
+    connected.value = false
+    connecting.value = false
+  }
+  
+  const handleMessage = (message) => {
+    switch (message.type) {
+      case 'connected':
+        clientId.value = message.clientId
+        authenticatedUser.value = message.user
+        console.log('📱 Assigned client ID:', message.clientId)
+        console.log('👤 Authenticated as:', message.user?.name, '(' + message.user?.email + ')')
+        break
+        
+      case 'meter_data':
+        const key = `${message.device}:${message.channel}`
+        const newData = {
+          device: message.device,
+          channel: message.channel,
+          channels: message.data.channels,
+          timestamp: message.data.timestamp,
+          lastUpdate: Date.now()
+        }
+        meterData.set(key, newData)
+        // Debug log to verify data is received (less verbose)
+        if (Math.random() < 0.05) { // Only log 5% of messages to avoid spam
+          console.log(`📊 Meter data for ${key}:`, message.data.channels[0])
+        }
+        break
+        
+      case 'stream_list':
+        console.log('📋 Available streams:', message.streams)
+        break
+        
+      default:
+        console.log('📨 Received message:', message)
+    }
+  }
+  
+  const sendMessage = (message) => {
+    if (ws.value && connected.value) {
+      try {
+        ws.value.send(JSON.stringify(message))
+      } catch (err) {
+        console.error('❌ Failed to send message:', err)
+      }
+    } else if (connecting.value) {
+      // Queue message if connecting
+      console.log('📋 Queueing message until connected:', message)
+      messageQueue.value.push(message)
+    } else {
+      console.warn('⚠️ Cannot send message: WebSocket not connected')
+    }
+  }
+  
+  const subscribe = (device, channel) => {
+    const key = `${device}:${channel}`
+    
+    if (subscriptions.value.has(key)) {
+      console.log(`📊 Already subscribed to ${key}`)
+      return
+    }
+    
+    console.log(`📊 Subscribing to audio meter: ${key}`)
+    subscriptions.value.add(key)
+    
+    sendMessage({
+      type: 'subscribe',
+      device: device,
+      channel: parseInt(channel)
+    })
+  }
+  
+  const unsubscribe = (device, channel) => {
+    const key = `${device}:${channel}`
+    
+    if (!subscriptions.value.has(key)) {
+      console.log(`📊 Not subscribed to ${key}`)
+      return
+    }
+    
+    console.log(`📊 Unsubscribing from audio meter: ${key}`)
+    subscriptions.value.delete(key)
+    meterData.delete(key)
+    
+    sendMessage({
+      type: 'unsubscribe',
+      device: device,
+      channel: parseInt(channel)
+    })
+  }
+  
+  const getMeterData = (device, channel) => {
+    const key = `${device}:${channel}`
+    return meterData.get(key) || null
+  }
+  
+  const listStreams = () => {
+    sendMessage({ type: 'list_streams' })
+  }
+  
+  // Auto-connect on mount
+  onMounted(async () => {
+    console.log('🔗 Component mounted, ensuring connection')
+    try {
+      await connect()
+    } catch (error) {
+      console.error('❌ Failed to connect on mount:', error)
+    }
+  })
+
+  // Cleanup on unmount - but don't close the shared connection unless it's the last component
+  onUnmounted(() => {
+    componentCount--
+    console.log(`🧹 Component unmounting, remaining components: ${componentCount}`)
+    
+    if (componentCount <= 0) {
+      console.log('🔌 Last component unmounting, cleaning up WebSocket')
+      // Unsubscribe from all streams
+      for (const key of subscriptions.value) {
+        const [device, channel] = key.split(':')
+        unsubscribe(device, channel)
+      }
+      
+      disconnect()
+      wsInstance = null // Reset singleton
+      componentCount = 0 // Reset counter
+    }
+  })
+
+  // Create singleton instance with enhanced subscription management
+  wsInstance = {
+    // Connection state
+    connected,
+    connecting,
+    error,
+    clientId,
+    authenticatedUser,
+    
+    // Authentication state
+    auth,
+    
+    // Connection methods
+    connect,
+    disconnect,
+    
+    // Subscription methods
+    subscribe: (device, channel) => {
+      const key = `${device}:${channel}`
+      
+      if (subscriptions.value.has(key)) {
+        console.log(`📊 Already subscribed to ${key}`)
+        return
+      }
+      
+      console.log(`📊 Subscribing to audio meter: ${key}`)
+      subscriptions.value.add(key)
+      
+      sendMessage({
+        type: 'subscribe',
+        device: device,
+        channel: parseInt(channel)
+      })
+    },
+    unsubscribe,
+    subscriptions,
+    
+    // Data access
+    meterData,
+    getMeterData,
+    
+    // Utility methods
+    listStreams,
+    sendMessage
+  }
+
+  return wsInstance
+}

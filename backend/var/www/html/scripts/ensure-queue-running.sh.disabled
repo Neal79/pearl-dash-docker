@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Script to ensure Pearl Dashboard queue worker is always running
+# Run this via cron every minute
+
+ARTISAN_PATH="/var/www/html/pearl-dash/artisan"
+QUEUE_COMMAND="queue:work --queue=polling,default --sleep=3 --tries=3 --timeout=300"
+
+# Check if queue worker is running
+if ! pgrep -f "queue:work.*polling" > /dev/null; then
+    echo "$(date): Queue worker not running, starting..."
+    cd /var/www/html/pearl-dash
+    nohup php $ARTISAN_PATH $QUEUE_COMMAND > /tmp/pearl-dash-queue.log 2>&1 &
+    echo "$(date): Queue worker started"
+else
+    echo "$(date): Queue worker is running"
+fi
+
+# Also ensure polling is active by dispatching a job if needed
+cd /var/www/html/pearl-dash
+php $ARTISAN_PATH devices:poll --once > /dev/null 2>&1
