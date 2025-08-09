@@ -8,10 +8,10 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: LaneChicago1997!
+      MYSQL_ROOT_PASSWORD: YFpewuDD7Ly27gT9D6hyW2UY959YuipKXmG0WWg2fWD48zpC0LwCmp3svCc51ZkNJQ3DRPEwqVpVBDZwh2
       MYSQL_DATABASE: pearl_dash
       MYSQL_USER: pearldashuser
-      MYSQL_PASSWORD: LaneChicago1997!
+      MYSQL_PASSWORD: YFpewuDD7Ly27gT9D6hyW2UY959YuipKXmG0WWg2fWD48zpC0LwCmp3svCc51ZkNJQ3DRPEwqVpVBDZwh2
     ports:
       - "3306:3306"
     networks:
@@ -20,7 +20,6 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 20s
       retries: 10
-
   # Production-Ready Laravel Container (Self-Contained)
   app:
     build:
@@ -103,6 +102,7 @@ services:
       - ${DOCKER_NETWORK_NAME:-pearlnet}
     depends_on:
       - nginx
+      - polling-service
 
   # Pearl Device Polling Service (Database Updates)
   polling-service:
@@ -144,8 +144,7 @@ services:
     networks:
       - ${DOCKER_NETWORK_NAME:-pearlnet}
     depends_on:
-      db:
-        condition: service_healthy
+      - nginx
 
   # Laravel Workspace Container for CLI Tasks
   workspace:

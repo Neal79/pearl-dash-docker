@@ -91,6 +91,10 @@ const config = {
   maxBackoffDelay: parseInt(process.env.PREVIEW_IMAGE_MAX_BACKOFF_DELAY) * 1000 || 300000, // Max 5 minutes backoff
   backoffMultiplier: parseFloat(process.env.PREVIEW_IMAGE_BACKOFF_MULTIPLIER) || 2,        // Exponential multiplier
   
+  // Zombie subscription prevention
+  subscriptionTimeout: parseInt(process.env.PREVIEW_IMAGE_SUBSCRIPTION_TIMEOUT) * 1000 || 300000, // 5 minutes timeout
+  heartbeatInterval: parseInt(process.env.PREVIEW_IMAGE_HEARTBEAT_INTERVAL) * 1000 || 60000,       // 60 seconds heartbeat check
+  
   // File storage (Docker volume mount)
   storageDir: path.join(__dirname, 'storage', 'images'),                     // Base directory for cached images
   
@@ -160,12 +164,15 @@ let dbConnection = null;                                                      //
 
 // New multi-subscriber architecture
 const deviceChannelInfo = new Map();                                         // deviceId_channelId -> {device, lastFetched, subscriberCount}
-const subscribers = new Map();                                                // subscriberId -> {deviceId, channelId, subscribedAt}  
+const subscribers = new Map();                                                // subscriberId -> {deviceId, channelId, subscribedAt, lastHeartbeat}  
 const deviceChannelSubscribers = new Map();                                  // deviceId_channelId -> Set<subscriberId>
 const pollingIntervals = new Map();                                          // deviceId_channelId -> intervalId
 
 // Hardware protection - exponential backoff state
 const deviceBackoffState = new Map();                                        // deviceId_channelId -> {consecutiveFailures, currentBackoffDelay, lastFailureTime}
+
+// Zombie subscription prevention
+let heartbeatInterval = null;                                                 // Heartbeat cleanup timer
 
 // Image cleanup configuration
 const IMAGE_MAX_AGE_MS = 3 * 60 * 1000;                                     // 3 minutes - images older than this are deleted
@@ -413,6 +420,164 @@ function getBackoffStats() {
   }
   
   return stats;
+}
+
+// Get zombie subscription monitoring statistics
+function getOldestSubscriptionAge() {
+  let oldestAge = 0;
+  const now = Date.now();
+  
+  for (const [subscriberId, subscription] of subscribers.entries()) {
+    const age = now - subscription.subscribedAt.getTime();
+    oldestAge = Math.max(oldestAge, age);
+  }
+  
+  return oldestAge > 0 ? `${Math.round(oldestAge / 60000)}m` : 'none';
+}
+
+function getHeartbeatStats() {
+  const now = Date.now();
+  const stats = {
+    totalSubscriptions: subscribers.size,
+    recentHeartbeats: 0,  // Within last 2 minutes
+    staleHeartbeats: 0,   // Older than 2 minutes but not zombie yet
+    nearZombies: 0        // Close to zombie timeout
+  };
+  
+  for (const [subscriberId, subscription] of subscribers.entries()) {
+    const lastHeartbeat = subscription.lastHeartbeat || subscription.subscribedAt;
+    const age = now - lastHeartbeat.getTime();
+    
+    if (age < 2 * 60 * 1000) {        // Less than 2 minutes
+      stats.recentHeartbeats++;
+    } else if (age < config.subscriptionTimeout * 0.8) {  // Less than 80% of timeout
+      stats.staleHeartbeats++;
+    } else {                           // Close to zombie threshold
+      stats.nearZombies++;
+    }
+  }
+  
+  return stats;
+}
+
+/**
+ * Zombie Subscription Prevention - Heartbeat System
+ * 
+ * Prevents laptops crashes, browser tabs closing unexpectedly, or network issues
+ * from leaving "zombie" subscriptions that continue polling Pearl devices forever.
+ * This system automatically cleans up stale subscriptions that haven't sent
+ * heartbeats within the configured timeout period.
+ */
+
+// Clean up zombie subscriptions that haven't sent heartbeats
+async function cleanupZombieSubscriptions() {
+  try {
+    const now = Date.now();
+    const timeoutMs = config.subscriptionTimeout;
+    let cleanedCount = 0;
+    const cleanedSubscriptions = [];
+    
+    logger.debug('Running zombie subscription cleanup...');
+    
+    for (const [subscriberId, subscription] of subscribers.entries()) {
+      const lastHeartbeat = subscription.lastHeartbeat || subscription.subscribedAt;
+      const age = now - lastHeartbeat.getTime();
+      
+      if (age > timeoutMs) {
+        const deviceChannelKey = `${subscription.deviceId}_${subscription.channelId}`;
+        
+        // Log zombie subscription found
+        logger.warn(`🧟 ZOMBIE SUBSCRIPTION DETECTED [${subscriberId}]`, {
+          deviceId: subscription.deviceId,
+          channelId: subscription.channelId,
+          ageMinutes: Math.round(age / 60000),
+          timeoutMinutes: Math.round(timeoutMs / 60000),
+          lastHeartbeat: lastHeartbeat.toISOString(),
+          reason: 'No heartbeat received within timeout period'
+        });
+        
+        // Remove from subscribers
+        subscribers.delete(subscriberId);
+        
+        // Remove from device/channel subscriber set
+        const subscriberSet = deviceChannelSubscribers.get(deviceChannelKey);
+        if (subscriberSet) {
+          subscriberSet.delete(subscriberId);
+          
+          // Update device info
+          const deviceInfo = deviceChannelInfo.get(deviceChannelKey);
+          if (deviceInfo) {
+            deviceInfo.subscriberCount = subscriberSet.size;
+            deviceChannelInfo.set(deviceChannelKey, deviceInfo);
+            
+            // If no subscribers left, stop polling and cleanup
+            if (subscriberSet.size === 0) {
+              stopPolling(subscription.deviceId, subscription.channelId);
+              deviceChannelSubscribers.delete(deviceChannelKey);
+              deviceChannelInfo.delete(deviceChannelKey);
+              
+              // Clean up stored image
+              try {
+                const imagePath = path.join(config.storageDir, subscription.deviceId.toString(), `channel_${subscription.channelId}.${config.format}`);
+                if (await fs.pathExists(imagePath)) {
+                  await fs.remove(imagePath);
+                  logger.debug(`Cleaned up zombie subscription image: ${imagePath}`);
+                }
+              } catch (cleanupError) {
+                logger.warn('Failed to cleanup zombie subscription image:', cleanupError.message);
+              }
+              
+              logger.info(`🛑 POLLING STOPPED due to zombie cleanup: Device ${subscription.deviceId} channel ${subscription.channelId}`);
+            }
+          }
+        }
+        
+        cleanedCount++;
+        cleanedSubscriptions.push({
+          subscriberId,
+          deviceId: subscription.deviceId,
+          channelId: subscription.channelId,
+          ageMinutes: Math.round(age / 60000)
+        });
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      logger.warn(`🧹 ZOMBIE CLEANUP: Removed ${cleanedCount} stale subscriptions`, {
+        cleanedSubscriptions,
+        timeoutMinutes: Math.round(timeoutMs / 60000),
+        remainingSubscriptions: subscribers.size
+      });
+    } else {
+      logger.debug(`✅ No zombie subscriptions found (${subscribers.size} active subscribers)`);
+    }
+    
+  } catch (error) {
+    logger.error('Error during zombie subscription cleanup:', error);
+  }
+}
+
+// Start periodic cleanup of zombie subscriptions
+function startZombieCleanup() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+  }
+  
+  // Run cleanup every heartbeat interval
+  heartbeatInterval = setInterval(cleanupZombieSubscriptions, config.heartbeatInterval);
+  logger.info(`Started zombie subscription cleanup (every ${config.heartbeatInterval/1000}s, timeout: ${config.subscriptionTimeout/1000}s)`);
+  
+  // Run initial cleanup
+  cleanupZombieSubscriptions();
+}
+
+// Stop periodic cleanup
+function stopZombieCleanup() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+    logger.info('Stopped zombie subscription cleanup');
+  }
 }
 
 /**
@@ -739,11 +904,13 @@ app.post('/subscribe', jwtAuth.createAuthMiddleware(true), async (req, res) => {
       };
     }
     
-    // Add subscriber to tracking
+    // Add subscriber to tracking with heartbeat
+    const now = new Date();
     subscribers.set(subscriberId, {
       deviceId,
       channelId,
-      subscribedAt: new Date()
+      subscribedAt: now,
+      lastHeartbeat: now
     });
     
     // Add to device/channel subscriber set
@@ -898,6 +1065,43 @@ app.delete('/unsubscribe', jwtAuth.createAuthMiddleware(true), async (req, res) 
   }
 });
 
+// Heartbeat endpoint to prevent zombie subscriptions
+app.post('/heartbeat', jwtAuth.createAuthMiddleware(true), async (req, res) => {
+  try {
+    const { subscriberId } = req.body;
+    
+    if (!subscriberId) {
+      return res.status(400).json({ 
+        error: 'Missing subscriberId' 
+      });
+    }
+    
+    const subscription = subscribers.get(subscriberId);
+    if (!subscription) {
+      return res.status(404).json({ 
+        error: 'Subscriber not found' 
+      });
+    }
+    
+    // Update heartbeat timestamp
+    subscription.lastHeartbeat = new Date();
+    subscribers.set(subscriberId, subscription);
+    
+    res.json({ 
+      success: true, 
+      subscriberId: subscriberId,
+      heartbeatReceived: subscription.lastHeartbeat.toISOString(),
+      message: 'Heartbeat updated successfully'
+    });
+    
+    logger.debug(`💓 HEARTBEAT received from subscriber ${subscriberId}`);
+    
+  } catch (error) {
+    logger.error('Heartbeat error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get preview image
 app.get('/image/:deviceId/:channelId', jwtAuth.createAuthMiddleware(true), async (req, res) => {
   try {
@@ -1021,6 +1225,12 @@ app.get('/status', jwtAuth.createAuthMiddleware(false), (req, res) => {
       maxBackoffDelay: backoffStats.maxBackoffDelay,
       backoffDetails: backoffStats.backoffDetails
     },
+    zombieProtection: {
+      heartbeatInterval: `${config.heartbeatInterval/1000}s`,
+      subscriptionTimeout: `${config.subscriptionTimeout/1000}s`,
+      oldestSubscription: getOldestSubscriptionAge(),
+      heartbeatStats: getHeartbeatStats()
+    },
     architecture: {
       multiSubscriber: true,
       sharedPolling: true,
@@ -1049,8 +1259,9 @@ healthApp.get('/health', (req, res) => {
 function cleanup() {
   logger.info('Shutting down preview image service...');
   
-  // Stop image cleanup
+  // Stop image cleanup and zombie cleanup
   stopImageCleanup();
+  stopZombieCleanup();
   
   // Stop all polling intervals
   for (const [key, intervalId] of pollingIntervals) {
@@ -1064,6 +1275,16 @@ function cleanup() {
   subscribers.clear();
   deviceChannelSubscribers.clear();
   deviceBackoffState.clear();
+  
+  // Clear cleanup intervals
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
+  }
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
   
   // Close database connection
   if (dbConnection) {
@@ -1124,6 +1345,9 @@ async function start() {
       
       // Start automatic image cleanup
       startImageCleanup();
+      
+      // Start zombie subscription cleanup
+      startZombieCleanup();
     });
     
   } catch (error) {
