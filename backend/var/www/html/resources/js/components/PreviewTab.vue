@@ -38,53 +38,86 @@
         <div class="preview-wrapper flex-grow-1">
           <div class="aspect-ratio-container">
             <div class="preview-content">
-              <!-- Still Image -->
-              <img 
-                v-if="currentDisplayUrl && !previewError"
-                :src="currentDisplayUrl" 
-                :alt="`${device.name || device.ip} Channel ${selectedChannel}`"
-                class="w-100 h-100"
-                style="object-fit: cover;"
-                @error="onImageError"
-              />
-              
-              <!-- CRITICAL ERROR STATE for Live Monitoring -->
-              <div 
-                v-else-if="previewError"
-                class="d-flex align-center justify-center h-100 preview-error-state"
-              >
-                <div class="text-center">
-                  <v-icon size="48" color="error" class="mb-3">
-                    mdi-alert-circle-outline
-                  </v-icon>
-                  <div class="text-h6 text-error mb-2">
-                    Preview Error
-                  </div>
-                  <div class="text-body-2 text-medium-emphasis mb-3">
-                    {{ previewError }}
-                  </div>
-                  <div class="text-caption text-disabled">
-                    Device {{ device.name || device.ip }} • Channel {{ selectedChannel }}
-                  </div>
-                </div>
+              <!-- HLS Video Player -->
+              <div v-if="isVideoMode && selectedChannel" class="video-container">
+                <HlsVideoPlayer
+                  :device="device.ip"
+                  :channel="parseInt(selectedChannel)"
+                  :auto-play="true"
+                  @exit-video-mode="handleToggleVideoMode"
+                  @video-error="(error) => emit('user-message', error, 'error')"
+                  @video-loaded="() => emit('user-message', 'Video stream loaded', 'success', 2000)"
+                />
               </div>
               
-              <!-- Loading placeholder -->
-              <div 
-                v-else
-                class="d-flex align-center justify-center h-100"
-              >
-                <div class="text-center">
-                  <v-progress-circular 
-                    indeterminate 
-                    color="primary" 
-                    class="mb-2"
+              <!-- Still Image (Default Mode) -->
+              <template v-else>
+                <!-- Still Image -->
+                <div class="image-container">
+                  <img 
+                    v-if="currentDisplayUrl && !previewError"
+                    :src="currentDisplayUrl" 
+                    :alt="`${device.name || device.ip} Channel ${selectedChannel}`"
+                    class="w-100 h-100"
+                    style="object-fit: cover;"
+                    @error="onImageError"
                   />
-                  <div class="text-body-2 text-medium-emphasis">
-                    Loading preview...
+                  
+                  <!-- Video Mode Toggle Button (Lower Right Corner) -->
+                  <div 
+                    v-if="currentDisplayUrl && !previewError && selectedChannel"
+                    class="video-toggle-overlay"
+                  >
+                    <v-btn
+                      icon="mdi-play-circle-outline"
+                      size="x-small"
+                      color="white"
+                      variant="elevated"
+                      class="video-toggle-button"
+                      @click="handleToggleVideoMode"
+                      title="Switch to video stream"
+                    />
                   </div>
                 </div>
-              </div>
+                
+                <!-- CRITICAL ERROR STATE for Live Monitoring -->
+                <div 
+                  v-if="previewError"
+                  class="d-flex align-center justify-center h-100 preview-error-state"
+                >
+                  <div class="text-center">
+                    <v-icon size="48" color="error" class="mb-3">
+                      mdi-alert-circle-outline
+                    </v-icon>
+                    <div class="text-h6 text-error mb-2">
+                      Preview Error
+                    </div>
+                    <div class="text-body-2 text-medium-emphasis mb-3">
+                      {{ previewError }}
+                    </div>
+                    <div class="text-caption text-disabled">
+                      Device {{ device.name || device.ip }} • Channel {{ selectedChannel }}
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Loading placeholder -->
+                <div 
+                  v-if="!currentDisplayUrl && !previewError"
+                  class="d-flex align-center justify-center h-100"
+                >
+                  <div class="text-center">
+                    <v-progress-circular 
+                      indeterminate 
+                      color="primary" 
+                      class="mb-2"
+                    />
+                    <div class="text-body-2 text-medium-emphasis">
+                      Loading preview...
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -389,6 +422,7 @@
 
 import { ref, computed, watch, onMounted, onBeforeUnmount, toRefs } from 'vue'
 import AudioMeter from './AudioMeter.vue'
+import HlsVideoPlayer from './HlsVideoPlayer.vue'
 
 interface Device {
   id: number
@@ -419,6 +453,7 @@ interface Props {
   userMessage: string | null
   userMessageType: 'success' | 'error' | 'info'
   previewError: string | null
+  isVideoMode?: boolean
 }
 
 const props = defineProps<Props>()
@@ -430,6 +465,7 @@ const emit = defineEmits<{
   'image-error': []
   'user-message-clear': []
   'user-message': [message: string, type: 'success' | 'error' | 'info', duration?: number]
+  'toggle-video-mode': []
 }>()
 
 // Make props reactive for proper real-time updates
@@ -445,7 +481,8 @@ const {
   currentDisplayUrl,
   userMessage,
   userMessageType,
-  previewError
+  previewError,
+  isVideoMode
 } = toRefs(props)
 
 // Event handlers that emit to parent
@@ -467,6 +504,10 @@ const onImageError = () => {
 
 const clearUserMessage = () => {
   emit('user-message-clear')
+}
+
+const handleToggleVideoMode = () => {
+  emit('toggle-video-mode')
 }
 
 // Component lifecycle
@@ -518,6 +559,35 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: contain; /* Maintain image aspect ratio, letterbox if needed */
   display: block;
+}
+
+/* Container styling for image and video modes */
+.image-container,
+.video-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* Video Toggle Button Overlay (Lower Right Corner) */
+.video-toggle-overlay {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 5;
+}
+
+.video-toggle-button {
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+  opacity: 0.9;
+}
+
+.video-toggle-button:hover {
+  opacity: 1;
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
 
 /* CRITICAL ERROR STATE styling for live monitoring */
@@ -650,6 +720,15 @@ onBeforeUnmount(() => {
   
   .preview-container {
     min-height: 250px;
+  }
+  
+  .video-toggle-overlay {
+    bottom: 6px;
+    right: 6px;
+  }
+  
+  .video-toggle-button {
+    transform: scale(0.9);
   }
 }
 </style>

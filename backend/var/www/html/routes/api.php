@@ -50,6 +50,12 @@ Route::middleware('auth:web')->group(function () {
     // Direct Proxy endpoints for Pearl Mini devices (for backward compatibility)
     Route::get('/devices/{device}/channels', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannels']);
     Route::get('/devices/{device}/channels/{channel}/preview', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannelPreview']);
+    
+    // HLS Video Streaming Endpoints (Added August 2025)
+    // Enables HLS video toggle feature - users can switch between static images and live video streams
+    Route::get('/devices/{device}/channels/{channel}/hls/stream.m3u8', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannelHlsStream']);
+    Route::get('/devices/{device}/channels/{channel}/hls/{segment}', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getChannelHlsSegment'])->where('segment', '.*\.ts');
+    
     Route::get('/devices/{device}/channels/{channel}/publishers/status', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getPublisherStatus']);
     Route::get('/devices/{device}/channels/{channel}/publishers/{publisher}/name', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getPublisherName']);
     Route::post('/devices/{device}/channels/{channel}/publishers/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startPublishers']);

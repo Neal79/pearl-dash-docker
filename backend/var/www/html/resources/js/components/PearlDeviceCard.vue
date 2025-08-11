@@ -176,9 +176,11 @@
             :user-message="userMessage"
             :user-message-type="userMessageType"
             :preview-error="previewError"
+            :is-video-mode="isVideoMode"
             @toggle-streaming="toggleStreaming"
             @toggle-recording="toggleRecording"
             @toggle-audio-mute="toggleAudioMute"
+            @toggle-video-mode="toggleVideoMode"
             @image-error="onImageError"
             @user-message-clear="userMessage = null"
             @user-message="showUserMessage"
@@ -358,6 +360,9 @@ const {
 const audioStreamingInstance = ref<any>(null)
 const isAudioMuted = ref(true) // Always starts muted
 
+// Video mode state (independent of image preview)
+const isVideoMode = ref(false)
+
 // Debug WebSocket connection status  
 console.log(`🔧 PearlDeviceCard WebSocket setup for device ${props.device.ip}:`)
 console.log(`   - Device ID: ${props.device.id}`)
@@ -422,7 +427,7 @@ const connectionStatus = computed(() => {
 })
 
   // Preview image caching integration
-  const { imageUrl: cachedImageUrl, isSubscribed, error: previewError } = usePreviewImage(
+  const { imageUrl: cachedImageUrl, error: previewError } = usePreviewImage(
     computed(() => props.device.id),
     selectedChannel
   )
@@ -636,6 +641,12 @@ watch(selectedChannel, async (newChannel) => {
   isAudioMuted.value = true
   console.log('🎵 Channel changed - audio reset to muted state')
   
+  // Exit video mode when channel changes (bandwidth conservation)
+  if (isVideoMode.value) {
+    isVideoMode.value = false
+    console.log('🎥 Channel changed - exited video mode for bandwidth conservation')
+  }
+  
   // Preview images automatically handled by usePreviewImage composable
   // (watch in composable will handle resubscription on channel change)
   console.log('📸 Preview image subscription updated for new channel')
@@ -659,7 +670,7 @@ const streamingStatus = computed(() => {
   const defaultState = {
     active: false,
     state: 'stopped' as const,
-    hasPublishers: hasPublishers.value
+    hasPublishers: hasPublishers.value || false
   }
 
   // If no channel selected, return default
@@ -673,9 +684,9 @@ const streamingStatus = computed(() => {
       return { active: false, state: 'stopped' as const, hasPublishers: false }
     }
     
-    const hasStarting = rtPublishers.some(p => p.status?.state === 'starting')
-    const hasStopping = rtPublishers.some(p => p.status?.state === 'stopping')  
-    const allStarted = rtPublishers.every(p => p.status?.started === true)
+    const hasStarting = rtPublishers.some((p: any) => p.status?.state === 'starting')
+    const hasStopping = rtPublishers.some((p: any) => p.status?.state === 'stopping')  
+    const allStarted = rtPublishers.every((p: any) => p.status?.started === true)
     
     let state: 'stopped' | 'starting' | 'started' | 'stopping' = 'stopped'
     let active = false
@@ -767,6 +778,20 @@ const toggleStreaming = async () => {
   } catch (err) {
     console.error('Error toggling streaming:', err)
     showUserMessage('An unexpected error occurred', 'error')
+  }
+}
+
+// Toggle video mode handler
+const toggleVideoMode = () => {
+  isVideoMode.value = !isVideoMode.value
+  const deviceName = props.device.name || props.device.ip
+  
+  if (isVideoMode.value) {
+    console.log(`🎥 Switched to video mode for ${deviceName} channel ${selectedChannel.value}`)
+    showUserMessage('Switched to video stream', 'success', 2000)
+  } else {
+    console.log(`🖼️ Switched to image mode for ${deviceName} channel ${selectedChannel.value}`)
+    showUserMessage('Switched to image preview', 'info', 2000)
   }
 }
 

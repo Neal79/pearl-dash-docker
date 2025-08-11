@@ -99,6 +99,138 @@ class DeviceProxyController extends Controller
     }
 
     /**
+     * Proxy HLS stream requests to Pearl Mini devices (Added August 2025)
+     * 
+     * HLS VIDEO TOGGLE FEATURE:
+     * =========================
+     * This endpoint enables HLS video streaming as a toggle alternative to static preview images.
+     * Users can switch between images and live video with a single click.
+     * 
+     * PROXY ARCHITECTURE:
+     * ==================
+     * - Proxies HLS .m3u8 playlist files from Pearl Mini devices through Laravel
+     * - Provides authentication layer (devices require Basic Auth)
+     * - Handles CORS headers for cross-browser compatibility
+     * - Rewrites segment URLs to point back to Laravel proxy (critical for browser access)
+     * 
+     * URL REWRITING STRATEGY:
+     * ======================
+     * Pearl devices return playlists with relative segment URLs like "seg_001.ts"
+     * These are rewritten to Laravel proxy URLs: "/api/devices/{id}/channels/{channel}/hls/seg_001.ts"
+     * This ensures browsers can fetch segments through the same authenticated proxy
+     * 
+     * BANDWIDTH CONSERVATION:
+     * ======================
+     * - No caching headers prevent stale streams
+     * - Frontend only requests when video mode is active
+     * - Streams automatically cleanup when switching back to image mode
+     */
+    public function getChannelHlsStream(Device $device, int $channel)
+    {
+        try {
+            // Build the Pearl Mini HLS stream URL (direct device endpoint)
+            $url = "http://{$device->ip}/streams/{$channel}/hls/stream.m3u8";
+            
+            // Make the request with basic authentication
+            $response = Http::withBasicAuth($device->username, $device->password)
+                ->timeout(30) // Longer timeout for streaming (vs 10s for images)
+                ->get($url);
+            
+            if ($response->successful()) {
+                $playlist = $response->body();
+                
+                // CRITICAL URL REWRITING: Transform relative segment URLs to Laravel proxy URLs
+                // This regex finds lines like "seg_001.ts" and rewrites them to full proxy paths
+                // Without this rewriting, browsers cannot fetch segments (404 errors occur)
+                $playlist = preg_replace_callback(
+                    '/^(seg_\d+\.ts)$/m',
+                    function($matches) use ($device, $channel) {
+                        $segment = $matches[1];
+                        return "/api/devices/{$device->id}/channels/{$channel}/hls/{$segment}";
+                    },
+                    $playlist
+                );
+                
+                return response($playlist)
+                    ->header('Content-Type', 'application/vnd.apple.mpegurl') // HLS MIME type
+                    ->header('Cache-Control', 'no-cache, no-store, must-revalidate') // Prevent stale streams
+                    ->header('Pragma', 'no-cache')
+                    ->header('Expires', '0')
+                    ->header('Access-Control-Allow-Origin', '*') // CORS for cross-browser access
+                    ->header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                    ->header('Access-Control-Allow-Headers', 'Range, Content-Range, X-Requested-With');
+            }
+            
+            return response()->json(['error' => 'HLS stream unreachable'], 503);
+            
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to fetch HLS stream'], 500);
+        }
+    }
+
+    /**
+     * Proxy HLS segment requests to Pearl Mini devices (Added August 2025)
+     * 
+     * HLS SEGMENT PROXY ARCHITECTURE:
+     * ==============================
+     * This endpoint proxies individual .ts (MPEG Transport Stream) segment files
+     * that make up the actual video content of HLS streams.
+     * 
+     * SEGMENT WORKFLOW:
+     * ================
+     * 1. Browser requests playlist from getChannelHlsStream() 
+     * 2. Playlist URLs rewritten to point to this Laravel proxy
+     * 3. Browser automatically requests each segment via this endpoint
+     * 4. Segments proxied from Pearl device with authentication
+     * 5. Raw MPEG-TS binary data returned to browser for video playback
+     * 
+     * CRITICAL ROUTING INTEGRATION:
+     * ============================
+     * Route definition requires regex constraint: ->where('segment', '.*\.ts')
+     * This ensures only .ts files are matched, preventing route conflicts
+     * Example URLs: /api/devices/1/channels/0/hls/seg_001.ts
+     * 
+     * BANDWIDTH OPTIMIZATION:
+     * ======================
+     * - Shorter timeout (10s vs 30s for playlists) for quick segment delivery
+     * - Brief caching (10s max-age) allows browser efficiency without stale data
+     * - MPEG-TS content type ensures proper browser video processing
+     * - Segments only requested when video is actively playing
+     * 
+     * SECURITY & CORS:
+     * ===============
+     * - Authentication handled transparently (browser doesn't see Pearl credentials)
+     * - CORS headers enable cross-browser video streaming
+     * - Laravel middleware stack provides CSRF protection
+     */
+    public function getChannelHlsSegment(Device $device, int $channel, string $segment)
+    {
+        try {
+            // Build the Pearl Mini HLS segment URL (direct device endpoint)
+            $url = "http://{$device->ip}/streams/{$channel}/hls/{$segment}";
+            
+            // Make the request with basic authentication
+            $response = Http::withBasicAuth($device->username, $device->password)
+                ->timeout(10) // Shorter timeout for segments (quick delivery needed for smooth video)
+                ->get($url);
+            
+            if ($response->successful()) {
+                return response($response->body())
+                    ->header('Content-Type', 'video/mp2t') // MPEG-TS content type (binary video data)
+                    ->header('Cache-Control', 'max-age=10') // Brief cache - balance performance vs freshness
+                    ->header('Access-Control-Allow-Origin', '*') // CORS for cross-browser compatibility
+                    ->header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                    ->header('Access-Control-Allow-Headers', 'Range, Content-Range, X-Requested-With');
+            }
+            
+            return response()->json(['error' => 'HLS segment unreachable'], 404);
+            
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to fetch HLS segment'], 500);
+        }
+    }
+
+    /**
      * Get publisher status for a specific channel
      */
     public function getPublisherStatus(Device $device, int $channel)
