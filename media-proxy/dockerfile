@@ -1,14 +1,34 @@
 FROM node:20
 
-# Install FFmpeg for RTSP stream processing
+# Install FFmpeg for RTSP stream processing with hardware compatibility
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y \
+        ffmpeg \
+        # Additional codecs and compatibility libraries
+        libavcodec-extra \
+        # Hardware acceleration support (if available)
+        vainfo \
+        intel-media-va-driver \
+        # Network troubleshooting tools
+        iputils-ping \
+        curl && \
+    # Verify FFmpeg installation
+    ffmpeg -version && \
+    # Clean up to reduce image size
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 WORKDIR /app
 
-COPY . .
-RUN npm install
+# Copy package.json for dependency installation
+COPY package.json ./
+RUN npm install --production
 
-EXPOSE 3444
+# Copy application code
+COPY . .
+
+# Create HLS storage directory with proper permissions
+RUN mkdir -p /tmp/hls-storage && \
+    chmod 755 /tmp/hls-storage
+
+EXPOSE 3444 3445
 CMD ["node", "audio-meter-service.js"]

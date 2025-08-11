@@ -49,20 +49,25 @@
         ref="videoRef"
         class="hls-video"
         :muted="isMuted"
-        preload="metadata"
+        preload="auto"
         controls
         playsinline
+        crossorigin="anonymous"
+        x-webkit-airplay="allow"
+        webkit-playsinline
         @loadstart="onLoadStart"
         @loadedmetadata="onLoadedMetadata" 
         @canplay="onCanPlay"
         @play="onPlay"
         @pause="onPause"
         @error="onError"
+        @waiting="onWaiting"
+        @canplaythrough="onCanPlayThrough"
       >
         Your browser does not support HLS video streaming.
       </video>
       
-      <!-- Loading Overlay -->
+      <!-- Loading Overlay with Retry Status -->
       <Transition name="fade-overlay">
         <div v-if="!isLoaded || loading" class="loading-overlay">
           <div class="text-center">
@@ -72,8 +77,11 @@
               size="32"
               class="mb-2"
             />
-            <div class="text-body-2 text-white">
+            <div class="text-body-2 text-white mb-2">
               Loading video stream...
+            </div>
+            <div class="text-caption text-white opacity-80">
+              Waiting for HLS segments to be available
             </div>
           </div>
         </div>
@@ -197,6 +205,16 @@ const onError = (event: Event) => {
   
   console.error('🎥 Video error:', errorCode, errorMessage)
   emit('video-error', errorMessage)
+}
+
+const onWaiting = () => {
+  console.log('⏳ Video waiting for data - buffering...')
+  loading.value = true
+}
+
+const onCanPlayThrough = () => {
+  console.log('✅ Video can play through without stopping')
+  loading.value = false
 }
 
 const exitVideoMode = () => {

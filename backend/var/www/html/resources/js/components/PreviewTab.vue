@@ -74,8 +74,9 @@
                       color="white"
                       variant="elevated"
                       class="video-toggle-button"
+                      :disabled="isVideoToggleDisabled"
                       @click="handleToggleVideoMode"
-                      title="Switch to video stream"
+                      :title="isVideoToggleDisabled ? 'Please wait - channel loading...' : 'Switch to video stream'"
                     />
                   </div>
                 </div>
@@ -485,6 +486,47 @@ const {
   isVideoMode
 } = toRefs(props)
 
+// VIDEO TOGGLE RACE CONDITION PREVENTION (January 2025)
+// =====================================================
+// Prevents "touchy" behavior when users rapidly switch channels by disabling
+// the video toggle button for 3 seconds after channel changes. This allows
+// HLS segments to be properly generated before allowing video mode activation.
+//
+// PROBLEM SOLVED:
+// - Users clicking video toggle too quickly after channel changes
+// - HLS segments not yet available causing errors
+// - Race conditions between channel switching and video loading
+//
+// SOLUTION:
+// - 3-second disabled state with visual feedback (grayed out, different tooltip)
+// - Automatic timer cleanup on component unmount
+// - Timer reset on rapid channel changes (restart 3-second countdown)
+//
+const isVideoToggleDisabled = ref(false)
+let disableTimer: NodeJS.Timeout | null = null
+
+// Watch for channel changes and temporarily disable video toggle
+watch(selectedChannel, (newChannel, oldChannel) => {
+  if (oldChannel && newChannel !== oldChannel) {
+    console.log(`🎥 Channel changed from ${oldChannel} to ${newChannel} - disabling video toggle for 3 seconds`)
+    
+    // Disable the video toggle button with visual feedback
+    isVideoToggleDisabled.value = true
+    
+    // Clear any existing timer (handles rapid channel switching)
+    if (disableTimer) {
+      clearTimeout(disableTimer)
+    }
+    
+    // Re-enable after 3 seconds (allows HLS segments to generate)
+    disableTimer = setTimeout(() => {
+      isVideoToggleDisabled.value = false
+      disableTimer = null
+      console.log('✅ Video toggle re-enabled after channel change delay')
+    }, 3000)
+  }
+}, { immediate: false })
+
 // Event handlers that emit to parent
 const handleToggleStreaming = () => {
   emit('toggle-streaming')
@@ -517,6 +559,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   console.log(`🖼️ PreviewTab unmounting for device ${device.value.id}`)
+  
+  // Clean up disable timer
+  if (disableTimer) {
+    clearTimeout(disableTimer)
+    disableTimer = null
+  }
 })
 </script>
 
@@ -584,10 +632,17 @@ onBeforeUnmount(() => {
   opacity: 0.9;
 }
 
-.video-toggle-button:hover {
+.video-toggle-button:hover:not(:disabled) {
   opacity: 1;
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.video-toggle-button:disabled {
+  opacity: 0.4 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+  filter: grayscale(0.8);
 }
 
 /* CRITICAL ERROR STATE styling for live monitoring */

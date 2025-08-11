@@ -37,6 +37,8 @@ services:
     volumes:
       # Development volume mount - comment out for production
       - ./backend/var/www/html:/var/www/html
+      # Shared HLS storage for bandwidth optimization (audio-meter generates, Laravel serves)
+      - hls_storage:/tmp/hls-storage
     env_file:
       - .env
     networks:
@@ -73,6 +75,9 @@ services:
     ports:
       - "3444:3444"  # WebSocket
       - "3445:3445"  # Health/Status API
+    volumes:
+      # Shared HLS storage for bandwidth optimization (audio-meter generates, Laravel serves)
+      - hls_storage:/tmp/hls-storage
     environment:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET}
@@ -184,3 +189,4 @@ volumes:
   app_public:
   workspace_composer_cache:
   preview_images:
+  hls_storage:
