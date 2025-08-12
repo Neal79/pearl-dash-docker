@@ -125,7 +125,7 @@ import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useHlsVideo } from '../composables/useHlsVideo'
 
 interface Props {
-  device: string // Device IP  
+  deviceId: number // Device ID (database ID for HLS URL)  
   channel: number // Channel ID
   autoPlay?: boolean // Auto-play when loaded
 }
@@ -160,12 +160,12 @@ const {
   toggleFullscreen: hlsToggleFullscreen,
   destroy
 } = useHlsVideo({
-  device: props.device,
+  deviceId: props.deviceId,
   channel: props.channel,
   autoStart: false
 })
 
-console.log(`🎥 HlsVideoPlayer mounted for ${props.device}:${props.channel}`)
+console.log(`🎥 HlsVideoPlayer mounted for device ${props.deviceId}:${props.channel}`)
 
 // Video event handlers
 const onLoadStart = () => {

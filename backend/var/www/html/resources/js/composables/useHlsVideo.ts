@@ -59,7 +59,7 @@ import { ref, computed, onBeforeUnmount, watch, nextTick } from 'vue'
 import type { Ref } from 'vue'
 
 interface HlsVideoOptions {
-  device: string // Device IP
+  deviceId: number // Device ID (database ID for HLS URL)
   channel: number // Channel ID
   autoStart?: boolean // Auto-start video on init
 }
@@ -99,15 +99,15 @@ export function useHlsVideo(options: HlsVideoOptions): HlsVideoComposable {
   
   // Construct stream URL - points to Laravel HLS proxy (not direct Pearl device)
   const streamUrl = computed(() => {
-    if (!options.device || !options.channel) return null
+    if (!options.deviceId || !options.channel) return null
     // IMPORTANT: Uses Laravel proxy endpoint, not direct Pearl device URL
     // This ensures authentication, CORS headers, and segment URL rewriting
     // Laravel proxy format: /api/devices/{device_id}/channels/{channel}/hls/stream.m3u8
-    // Note: Hard-coded device ID 1 - in production this should use actual device lookup
-    return `/api/devices/1/channels/${options.channel}/hls/stream.m3u8`
+    // Uses dynamic device ID from database (FIXED: was previously hard-coded to 1)
+    return `/api/devices/${options.deviceId}/channels/${options.channel}/hls/stream.m3u8`
   })
   
-  console.log(`🎥 HLS Video composable initialized for ${options.device}:${options.channel}`)
+  console.log(`🎥 HLS Video composable initialized for device ${options.deviceId}:${options.channel}`)
   
   /**
    * Load HLS stream into video element with retry logic for timing issues

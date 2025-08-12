@@ -41,7 +41,7 @@
               <!-- HLS Video Player -->
               <div v-if="isVideoMode && selectedChannel" class="video-container">
                 <HlsVideoPlayer
-                  :device="device.ip"
+                  :device-id="device.id"
                   :channel="parseInt(selectedChannel)"
                   :auto-play="true"
                   @exit-video-mode="handleToggleVideoMode"
