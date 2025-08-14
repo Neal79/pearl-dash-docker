@@ -340,7 +340,7 @@ class RealTimeDataService {
           permissions: userInfo.permissions
         },
         capabilities: {
-          dataTypes: ['publisher_status', 'device_health', 'stream_quality', 'recording_status'],
+          dataTypes: ['publisher_status', 'device_health', 'stream_quality', 'recording_status', 'recorder_status', 'system_identity', 'system_status'],
           maxSubscriptions: this.MAX_SUBSCRIPTIONS_PER_CLIENT,
           version: '1.0.0'
         },
@@ -409,7 +409,7 @@ class RealTimeDataService {
 
   validateSubscriptionParams(dataType, device, channel, publisherId) {
     // Validate data type
-    const validDataTypes = ['publisher_status', 'device_health', 'stream_quality', 'recording_status'];
+    const validDataTypes = ['publisher_status', 'device_health', 'stream_quality', 'recording_status', 'recorder_status', 'system_identity', 'system_status', 'publisher_names', 'device_channels'];
     if (!validDataTypes.includes(dataType)) {
       return { valid: false, error: `Invalid data type: ${dataType}` };
     }

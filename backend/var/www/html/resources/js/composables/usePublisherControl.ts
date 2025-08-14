@@ -186,19 +186,19 @@ export function usePublisherControl(deviceId: number, channelId: Ref<string | ''
     }
   }
 
-  // DISABLED - Polling for status updates (Pure WebSocket mode)
+  // DISABLED - Continuous polling (using hybrid HTTP initial + WebSocket updates instead)
   const isPollingActive = ref(false)
   const startPolling = () => {
-    console.log('🚫 Publisher polling disabled - using pure WebSocket mode')
-    // No-op in pure WebSocket mode
+    console.log('🚫 Continuous polling disabled - using hybrid HTTP initial + WebSocket updates')
+    // No-op - polling replaced by hybrid HTTP/WebSocket approach
   }
   const stopPolling = () => {
-    console.log('🚫 Publisher polling disabled - using pure WebSocket mode')
-    // No-op in pure WebSocket mode
+    console.log('🚫 Continuous polling disabled - using hybrid HTTP initial + WebSocket updates')
+    // No-op - polling replaced by hybrid HTTP/WebSocket approach
   }
   const restartPolling = () => {
-    console.log('🚫 Publisher polling disabled - using pure WebSocket mode')
-    // No-op in pure WebSocket mode
+    console.log('🚫 Continuous polling disabled - using hybrid HTTP initial + WebSocket updates')
+    // No-op - polling replaced by hybrid HTTP/WebSocket approach
   }
 
   // Computed values for streaming status
@@ -240,12 +240,12 @@ export function usePublisherControl(deviceId: number, channelId: Ref<string | ''
     updateStreamingStatus()
   }, { deep: true })
 
-  // DISABLED - Watch for channel changes (Pure WebSocket mode)
+  // Channel change handling (Hybrid mode - HTTP initial fetch handled by parent component)
   watch(channelId, (newChannelId) => {
     if (!newChannelId) {
       publishers.value = []
     }
-    // No polling restart needed in WebSocket mode
+    // No continuous polling restart needed - parent component handles HTTP initial fetch
   })
 
   return {

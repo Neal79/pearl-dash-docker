@@ -11,7 +11,7 @@ echo -e "${GREEN}Starting Pearl Dashboard Testing Build...${NC}"
 
 # Wait for database to be ready
 echo -e "${YELLOW}Waiting for database connection...${NC}"
-while ! mysqladmin ping -h"$DB_HOST" --silent; do
+while ! mysqladmin ping -h"$DB_HOST" --silent --skip-ssl; do
     echo "Waiting for database..."
     sleep 2
 done

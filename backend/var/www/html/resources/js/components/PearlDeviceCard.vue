@@ -242,8 +242,9 @@
           <RecordTab 
             :device="device" 
             :selected-channel="selectedChannel"
+            :recorders="httpRecorders || []"
             :realtime-recorder-data="realtimeRecorderData"
-            :recorder-connected="recorderConnected"
+            :realtime-connected="recorderConnected"
             :recorder-last-updated="recorderLastUpdated"
             @user-message="showUserMessage"
           />
@@ -374,6 +375,25 @@ const {
   stopPublishers,
   fetchPublisherStatus
 } = usePublisherControl(props.device.id, selectedChannel)
+
+// HTTP recorder data fetching (device-wide, not channel-specific)
+const httpRecorders = ref([])
+const fetchRecorderStatus = async () => {
+  try {
+    const response = await fetch(`/api/devices/${props.device.id}/recorders/status`)
+    if (response.ok) {
+      const data = await response.json()
+      httpRecorders.value = data.recorders || []
+    }
+  } catch (error) {
+    console.error('Failed to fetch recorder status:', error)
+  }
+}
+
+// Fetch recorder status on mount and when device changes
+onMounted(() => {
+  fetchRecorderStatus()
+})
 
 // Real-time WebSocket data for publisher status updates
 const {

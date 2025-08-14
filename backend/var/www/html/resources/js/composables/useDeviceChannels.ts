@@ -1,37 +1,36 @@
 /**
- * DEVICE CHANNELS COMPOSABLE - POLLING PATTERN FOR FUTURE FEATURES
- * ================================================================
+ * DEVICE CHANNELS COMPOSABLE - HYBRID ARCHITECTURE PATTERN
+ * =========================================================
  * 
- * This composable demonstrates the STANDARD POLLING PATTERN used throughout
- * the Pearl Dashboard for real-time data updates. Use this as a template
- * when adding new features that need live data from Pearl devices.
+ * This composable demonstrates the HYBRID HTTP + WEBSOCKET PATTERN used throughout
+ * the Pearl Dashboard for optimal user experience with real-time data updates.
  * 
- * PATTERN OVERVIEW:
- * 1. Reactive state management (ref, computed)
- * 2. API fetch functions with error handling
- * 3. Polling control (start/stop/restart)
- * 4. Lifecycle management (onMounted/onBeforeUnmount)
- * 5. Graceful error handling with fallbacks
+ * HYBRID ARCHITECTURE OVERVIEW:
+ * 1. HTTP Initial Load: Immediate data on page load/channel change
+ * 2. WebSocket Updates: Real-time updates after initial load
+ * 3. Smart Fallback: Graceful degradation when WebSocket unavailable
+ * 4. Backend Cache: All data comes from backend cache, not direct device calls
+ * 5. One-time Fetch: No continuous polling, WebSocket handles updates
  * 
  * KEY PRINCIPLES:
- * - IMMEDIATE + POLLING: Always fetch immediately, then start polling
- * - BACKEND CACHE: All data comes from backend cache, not direct device calls
+ * - IMMEDIATE + REALTIME: HTTP for instant UX, WebSocket for live updates
+ * - BACKEND CACHE: All data comes from backend state API, not direct device calls
  * - ERROR GRACEFUL: Preserve last known good state on errors
- * - LIFECYCLE CLEAN: Always clean up polling on component unmount
+ * - LIFECYCLE CLEAN: Always clean up WebSocket subscriptions on component unmount
  * - REACTIVE: Use Vue reactivity for automatic UI updates
  * 
  * WHEN TO USE THIS PATTERN:
  * - Device configuration data (layouts, presets, settings)
  * - Real-time status data (recording, streaming, encoding)
  * - Health monitoring data (temperatures, storage, network)
- * - Any data that changes over time and needs UI updates
+ * - Any data that changes over time and needs immediate + live updates
  * 
  * HOW TO ADAPT FOR NEW FEATURES:
  * 1. Copy this file and rename interfaces/functions
- * 2. Update API endpoint URLs
- * 3. Modify data transformation logic
- * 4. Adjust polling intervals based on data freshness needs
- * 5. Add feature-specific error handling
+ * 2. Update API endpoint URLs for HTTP initial load
+ * 3. Add corresponding WebSocket subscription in parent component
+ * 4. Modify data transformation logic for both HTTP and WebSocket data
+ * 5. Add feature-specific error handling and graceful degradation
  */
 
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
@@ -80,9 +79,9 @@ export function useDeviceChannels(deviceId: number) {
   // API authentication
   const apiAuth = useApiAuth()
   
-  // INITIAL LOAD ONLY - Fetch channels from device state API (one-time call)
+  // HYBRID MODE - HTTP initial load for immediate UX (WebSocket updates handled by parent)
   const fetchChannels = async (force = false, includeStatus = true): Promise<DeviceChannelsResponse | null> => {
-    console.log(`🔄 [Device Channels] Fetching channels for device ${deviceId}`)
+    console.log(`🔄 [Device Channels] Fetching initial channel data for device ${deviceId} (hybrid mode)`)
     
     // Avoid redundant calls unless forced
     if (loading.value && !force) return null
@@ -145,21 +144,23 @@ export function useDeviceChannels(deviceId: number) {
     }
   }
   
-  // DISABLED - Lightweight status refresh (Pure WebSocket mode after initial load)
+  // DISABLED - Lightweight status refresh (using hybrid HTTP initial + WebSocket updates instead)
   const refreshStatus = async (): Promise<boolean> => {
-    // No-op in pure WebSocket mode - data comes from WebSocket after initial load
+    console.log('🚫 Status refresh disabled - using hybrid HTTP initial + WebSocket updates')
+    // No-op - status updates come from WebSocket after initial HTTP load
     return true
   }
   
-  // DISABLED - Start background polling (Pure WebSocket mode)
+  // DISABLED - Start background polling (using hybrid HTTP initial + WebSocket updates instead)
   const startPolling = (intervalMs = 2000) => {
-    console.log(`🚫 Channel polling disabled - using pure WebSocket mode for device ${deviceId}`)
-    // No-op in pure WebSocket mode
+    console.log(`🚫 Channel polling disabled - using hybrid HTTP initial + WebSocket updates for device ${deviceId}`)
+    // No-op - polling replaced by hybrid HTTP/WebSocket approach
   }
   
-  // DISABLED - Stop background polling (Pure WebSocket mode)
+  // DISABLED - Stop background polling (using hybrid HTTP initial + WebSocket updates instead)
   const stopPolling = () => {
-    // No-op in pure WebSocket mode
+    console.log('🚫 Channel polling disabled - using hybrid HTTP initial + WebSocket updates')
+    // No-op - polling replaced by hybrid HTTP/WebSocket approach
     if (pollingInterval) {
       clearInterval(pollingInterval)
       pollingInterval = null
@@ -204,6 +205,16 @@ export function useDeviceChannels(deviceId: number) {
     return 'disconnected'
   })
   
+  // HYBRID MODE - Update channels from WebSocket data (for real-time updates)
+  const updateChannelsFromWebSocket = (webSocketData: any) => {
+    if (webSocketData?.channels && Array.isArray(webSocketData.channels)) {
+      console.log(`🔄 [Device Channels] Updating channels from WebSocket for device ${deviceId}:`, webSocketData.channels.length)
+      channels.value = webSocketData.channels
+      lastFetch.value = new Date(webSocketData.fetched_at)
+      error.value = null
+    }
+  }
+
   // Auto-cleanup on unmount
   onBeforeUnmount(() => {
     stopPolling()
@@ -230,5 +241,6 @@ export function useDeviceChannels(deviceId: number) {
     findChannel,
     getPrimaryPublisher,
     isChannelStreaming,
+    updateChannelsFromWebSocket,
   }
 }

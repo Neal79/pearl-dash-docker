@@ -67,10 +67,15 @@ Route::middleware('auth:web')->group(function () {
     Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startIndividualPublisher']);
     Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopIndividualPublisher']);
     
-    // Device-wide recorder control endpoints (for StreamsTab recording buttons)
+    // Device-wide recorder control endpoints (for PreviewTab recording buttons)
     Route::get('/devices/{device}/recorders/status', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getRecorderStatus']);
     Route::post('/devices/{device}/recorders/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startRecorders']);
     Route::post('/devices/{device}/recorders/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopRecorders']);
+    
+    // Individual recorder control endpoints (for RecordTab individual controls)
+    Route::get('/devices/{device}/recorders/{recorder}/status', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getIndividualRecorderStatus']);
+    Route::post('/devices/{device}/recorders/{recorder}/control/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startIndividualRecorder']);
+    Route::post('/devices/{device}/recorders/{recorder}/control/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopIndividualRecorder']);
     
     // WebSocket authentication token for authenticated users
     Route::get('/auth/token', [AuthController::class, 'getWebSocketToken']);
