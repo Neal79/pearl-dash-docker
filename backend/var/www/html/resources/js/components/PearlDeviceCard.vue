@@ -14,15 +14,26 @@
   - Record Tab: Still handled in this component  
   - Status Tab: Still handled in this component
   
-  DATA FLOW TO STREAMSTAB:
+  DATA FLOW TO STREAMSTAB (HYBRID ARCHITECTURE):
   This component passes reactive data to StreamsTab via props:
   - device: Device object
   - selectedChannel: Current channel selection
-  - publishers: HTTP publisher data from usePublisherControl
-  - realtimePublisherData: WebSocket data from useRealTimeData
+  - publishers: HTTP publisher data (for initial state on mount/channel change)
+  - realtimePublisherData: WebSocket publisher status (real-time updates)
+  - realtimePublisherNames: WebSocket publisher names (15s updates)
   - realtimeConnected: WebSocket connection status
-  - realtimeLastUpdated: Last WebSocket update timestamp
+  - realtimeLastUpdated: Last WebSocket update timestamps
   - findChannel: Helper function from useDeviceChannels
+  
+  HYBRID ARCHITECTURE (HTTP + WebSocket):
+  =======================================
+  
+  The component now uses a hybrid approach for optimal user experience:
+  1. HTTP API calls for immediate data on mount and channel changes
+  2. WebSocket events for real-time updates (via tiered polling backend)
+  3. Smart data merging with HTTP fallback when WebSocket data unavailable
+  
+  This provides instant functionality while maintaining real-time updates.
   
   CRITICAL LEARNING: Reactive Props Pattern
   =========================================
@@ -177,6 +188,10 @@
             :user-message-type="userMessageType"
             :preview-error="previewError"
             :is-video-mode="isVideoMode"
+            :realtime-publisher-data="realtimePublisherData"
+            :realtime-recorder-data="realtimeRecorderData"
+            :realtime-connected="realtimeConnected"
+            :recorder-connected="recorderConnected"
             @toggle-streaming="toggleStreaming"
             @toggle-recording="toggleRecording"
             @toggle-audio-mute="toggleAudioMute"
@@ -212,8 +227,11 @@
             :selected-channel="selectedChannel"
             :publishers="httpPublishers || []"
             :realtime-publisher-data="realtimePublisherData"
+            :realtime-publisher-names="realtimePublisherNames"
             :realtime-connected="realtimeConnected"
+            :names-connected="namesConnected"
             :realtime-last-updated="realtimeLastUpdated"
+            :names-last-updated="namesLastUpdated"
             :find-channel="findChannel"
             @user-message="showUserMessage"
           />
@@ -224,6 +242,9 @@
           <RecordTab 
             :device="device" 
             :selected-channel="selectedChannel"
+            :realtime-recorder-data="realtimeRecorderData"
+            :recorder-connected="recorderConnected"
+            :recorder-last-updated="recorderLastUpdated"
             @user-message="showUserMessage"
           />
         </v-tabs-window-item>
@@ -237,6 +258,12 @@
             :channel-mode="channelMode"
             :channels-count="channels?.length || 0"
             :channels-error="channelsError"
+            :realtime-system-identity="realtimeSystemIdentity"
+            :realtime-system-status="realtimeSystemStatus"
+            :identity-connected="identityConnected"
+            :status-connected="statusConnected"
+            :identity-last-updated="identityLastUpdated"
+            :status-last-updated="statusLastUpdated"
           />
         </v-tabs-window-item>
       </v-tabs-window>
@@ -279,7 +306,6 @@ import { usePublisherControl } from '../composables/usePublisherControl'
 import { useRealTimeData } from '../composables/useRealTimeData'
 import { useAudioStreaming } from '../composables/useAudioStreaming'
 import { usePreviewImage } from '../composables/usePreviewImage'
-import AudioMeter from './AudioMeter.vue'
 import StreamsTab from './StreamsTab.vue'
 import RecordTab from './RecordTab.vue'
 import StatusTab from './StatusTab.vue'
@@ -335,10 +361,11 @@ const {
   hasChannels,
   findChannel,
   fetchChannels, // ← Add this to use the same instance
-  stopPolling: stopChannelPolling // ← Add this for cleanup
+  stopPolling: stopChannelPolling, // ← Add this for cleanup
+  updateChannelsFromWebSocket // ← Add this for WebSocket updates
 } = useDeviceChannels(props.device.id)
 
-// Publisher control for streaming (Pure WebSocket mode - no HTTP polling)
+// Publisher control for streaming (Hybrid mode - HTTP initial state + WebSocket updates)
 const {
   publishers: httpPublishers,
   isControlling,
@@ -356,6 +383,41 @@ const {
   lastUpdated: realtimeLastUpdated
 } = useRealTimeData('publisher_status', props.device.ip, selectedChannel)
 
+// Real-time WebSocket data for publisher names (medium tier - 15s updates)
+const {
+  data: realtimePublisherNames,
+  isConnected: namesConnected,
+  lastUpdated: namesLastUpdated
+} = useRealTimeData('publisher_names', props.device.ip, selectedChannel)
+
+// Real-time WebSocket data for recorder status (medium tier - 15s updates)
+const {
+  data: realtimeRecorderData,
+  isConnected: recorderConnected,
+  lastUpdated: recorderLastUpdated
+} = useRealTimeData('recorder_status', props.device.ip)
+
+// Real-time WebSocket data for system identity (slow tier - 30s updates)
+const {
+  data: realtimeSystemIdentity,
+  isConnected: identityConnected,
+  lastUpdated: identityLastUpdated
+} = useRealTimeData('system_identity', props.device.ip)
+
+// Real-time WebSocket data for system status (slow tier - 30s updates)
+const {
+  data: realtimeSystemStatus,
+  isConnected: statusConnected,
+  lastUpdated: statusLastUpdated
+} = useRealTimeData('system_status', props.device.ip)
+
+// Real-time WebSocket data for device channels (fast tier - 1s updates)
+const {
+  data: realtimeChannelsData,
+  isConnected: channelsConnected,
+  lastUpdated: channelsLastUpdated
+} = useRealTimeData('device_channels', props.device.ip)
+
 // Simple audio state - only track mute/unmute
 const audioStreamingInstance = ref<any>(null)
 const isAudioMuted = ref(true) // Always starts muted
@@ -367,9 +429,19 @@ const isVideoMode = ref(false)
 console.log(`🔧 PearlDeviceCard WebSocket setup for device ${props.device.ip}:`)
 console.log(`   - Device ID: ${props.device.id}`)
 console.log(`   - Selected Channel: ${selectedChannel.value}`)
-console.log(`   - Connection Status: ${realtimeConnected.value}`)
-console.log(`   - Error: ${realtimeError.value}`)
-console.log(`   - Data Available: ${!!realtimePublisherData.value}`)
+console.log(`   📊 WebSocket Connections:`)
+console.log(`     - Publisher Status: ${realtimeConnected.value}`)
+console.log(`     - Publisher Names: ${namesConnected.value}`)
+console.log(`     - Recorder Status: ${recorderConnected.value}`)
+console.log(`     - System Identity: ${identityConnected.value}`)
+console.log(`     - System Status: ${statusConnected.value}`)
+console.log(`   📡 Data Available:`)
+console.log(`     - Publisher Status: ${!!realtimePublisherData.value}`)
+console.log(`     - Publisher Names: ${!!realtimePublisherNames.value}`)
+console.log(`     - Recorder Data: ${!!realtimeRecorderData.value}`)
+console.log(`     - System Identity: ${!!realtimeSystemIdentity.value}`)
+console.log(`     - System Status: ${!!realtimeSystemStatus.value}`)
+console.log(`   ⚠️ Errors: ${realtimeError.value}`)
 
 // Fallback to hardcoded channels if API fails
 const fallbackChannels = [1, 2, 3, 4]
@@ -479,8 +551,14 @@ onMounted(() => {
   console.log(`🔄 PearlDeviceCard mounted for device ${props.device.id} (${props.device.name || props.device.ip})`)
   console.log(`📡 Real-time WebSocket connection status: ${realtimeConnected.value ? '✅ Connected' : '❌ Disconnected'}`)
   
-  // PURE WEBSOCKET MODE: No HTTP channel fetching - data comes from real-time updates
-  console.log(`🔥 Device ${props.device.id} using pure WebSocket mode - no HTTP polling`)
+  // HYBRID MODE: Initial HTTP fetch + WebSocket updates for optimal UX
+  console.log(`🔄 Device ${props.device.id} using hybrid mode - initial HTTP fetch + WebSocket updates`)
+  
+  // Fetch initial publisher data for immediate display (especially on page refresh)
+  if (selectedChannel.value) {
+    console.log(`📡 Fetching initial publisher data for channel ${selectedChannel.value}`)
+    fetchPublisherStatus()
+  }
   
   // Perform async initialization in nextTick to avoid blocking component mount
   nextTick(async () => {
@@ -506,19 +584,19 @@ onMounted(() => {
        * - Auto-switches to normal polling after 30 seconds
        * - Provides instant feedback for device initialization
        * 
-       * HYBRID MODE: INITIAL LOAD + PURE WEBSOCKET UPDATES
-       * ==================================================
-       * 1. On mount: ONE HTTP call to get initial device state
-       * 2. After mount: Pure WebSocket mode for all updates
+       * HYBRID MODE: HTTP INITIAL STATE + WEBSOCKET UPDATES  
+       * ====================================================
+       * 1. On mount/channel change: HTTP calls for immediate data display
+       * 2. Real-time updates: WebSocket events for live data changes
        * 
        * This provides:
-       * - Immediate functional UI on load
-       * - Real-time updates without HTTP conflicts
-       * - No visual glitches from competing data sources
+       * - Immediate functional UI on load and channel changes
+       * - Real-time updates with smart HTTP fallback when needed
+       * - Optimal performance with reduced API calls via tiered polling
        */
       
       // INITIAL DATA LOAD: Get current device state for immediate UI functionality
-      console.log(`🔥 Device ${props.device.id} loading initial data, then switching to pure WebSocket mode`)
+      console.log(`🔄 Device ${props.device.id} loading initial data with hybrid HTTP + WebSocket mode`)
       
       // Load initial channels using the SAME composable instance
       try {
@@ -567,8 +645,8 @@ onMounted(() => {
       device info, stream quality, etc.
     */
     
-      // Pure WebSocket mode - no HTTP polling, only real-time data
-      console.log('🎯 Pure WebSocket mode activated. All data from real-time service.')
+      // Hybrid mode - HTTP for initial state, WebSocket for real-time updates
+      console.log('🎯 Hybrid mode activated. HTTP initial state + WebSocket real-time updates.')
       
       // Preview images are now handled automatically by usePreviewImage composable
       console.log('📸 Preview images managed by usePreviewImage composable')
@@ -604,7 +682,7 @@ watch(channels, (newChannels) => {
 })
 
 // Watch real-time connection and manage HTTP polling fallback
-// Real-time WebSocket connection status (Pure WebSocket mode - no HTTP fallback needed)
+// Real-time WebSocket connection status (Hybrid mode - WebSocket + HTTP fallback as needed)
 
 // NOTE: Removed obsolete real-time data watcher that was causing console spam
 // and potential data conflicts. The reactive data automatically updates the UI
@@ -617,6 +695,14 @@ watch([realtimeConnected, realtimeError], ([connected, error]) => {
   }
 }, { immediate: true })
 
+// Watch for WebSocket channels data updates (hybrid mode)
+watch(realtimeChannelsData, (newChannelsData) => {
+  if (newChannelsData && channelsConnected.value) {
+    console.log(`🔄 [PearlDeviceCard] Received WebSocket channels update for device ${props.device.ip} at ${channelsLastUpdated.value}`)
+    updateChannelsFromWebSocket(newChannelsData)
+  }
+}, { immediate: false, deep: true })
+
 // WebSocket data is automatically passed to StreamsTab via reactive props
 
 // Watch for channel changes in pure real-time mode
@@ -627,8 +713,14 @@ watch(selectedChannel, async (newChannel) => {
   // STABILITY: Add small delay to prevent rapid state changes during channel switching
   await new Promise(resolve => setTimeout(resolve, 50))
   
-  // Pure WebSocket mode - no HTTP polling even on channel change
-  console.log('🎯 Channel changed to', newChannel, '- waiting for WebSocket data.')
+  // Hybrid mode - fetch initial HTTP data for immediate display on channel change
+  console.log('🎯 Channel changed to', newChannel, '- fetching initial data + WebSocket updates')
+  
+  // Fetch initial publisher data for the new channel (same as page refresh)
+  if (newChannel) {
+    console.log(`📡 Fetching initial publisher data for new channel ${newChannel}`)
+    fetchPublisherStatus()
+  }
   
   // Clean up audio when channel changes
   if (audioStreamingInstance.value) {

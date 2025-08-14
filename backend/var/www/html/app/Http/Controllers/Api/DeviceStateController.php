@@ -248,6 +248,39 @@ class DeviceStateController extends Controller
     }
 
     /**
+     * Get recorder status for device (HTTP fallback for hybrid approach)
+     */
+    public function getRecorderStatus(Device $device): JsonResponse
+    {
+        // Get recorder states from database (fast tier updates)
+        $recorderStates = $device->recorderStates()
+            ->orderBy('recorder_id')
+            ->get();
+
+        // Transform database records to match WebSocket format
+        $recorders = $recorderStates->map(function ($recorder) {
+            return [
+                'id' => $recorder->recorder_id,
+                'name' => $recorder->name ?? "Recorder {$recorder->recorder_id}",
+                'status' => [
+                    'state' => $recorder->status ?? 'unknown',
+                    'duration' => $recorder->duration,
+                    'active' => $recorder->active,
+                    'total' => $recorder->total
+                ]
+            ];
+        });
+
+        return response()->json([
+            'recorders' => $recorders,
+            'status' => 'ok',
+            'device_id' => $device->id,
+            'device_ip' => $device->ip,
+            'fetched_at' => now()->toISOString()
+        ]);
+    }
+
+    /**
      * Get health overview of all devices
      */
     public function getDevicesHealth(): JsonResponse

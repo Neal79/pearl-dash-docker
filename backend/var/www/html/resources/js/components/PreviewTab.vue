@@ -8,10 +8,21 @@
   involving complex real-time state management, audio streaming, image handling,
   and control system integration.
   
+  STREAMING/RECORDING CONTROL INTEGRATION (August 2024):
+  ======================================================
+  
+  IMPORTANT: The streaming and recording control functionality was moved FROM StreamsTab.vue
+  TO PreviewTab.vue as requested. The controls are now located under the preview image:
+  
+  - STREAMING BUTTON (Blue): Controls ALL publishers for the selected channel
+  - RECORDING BUTTON (Red): Controls ALL recorders on the device (device-wide)
+  - Both buttons use real-time WebSocket data for state management
+  - Uses hybrid architecture: WebSocket real-time updates + HTTP fallback
+  
   COMPLEXITY FACTORS:
   - Real-time image updates with seamless loading
   - Audio streaming with Web Audio API integration
-  - Streaming/recording control system
+  - Streaming/recording control system with real-time WebSocket integration
   - User feedback overlay system
   - Multiple status indicators with real-time updates
   - Complex reactive state coordination
@@ -21,7 +32,7 @@
   - Audio streaming lifecycle management (subscription/cleanup)
   - Image loading with refresh intervals and error handling
   - Floating user message system (layout stable)
-  - Control button state synchronization
+  - Control button state synchronization with WebSocket data
   
   FUTURE ENHANCEMENTS:
   - Additional video streaming controls
@@ -227,31 +238,53 @@
             <!-- 
               STREAMING CONTROL BUTTON
               ========================
-              Button behavior for future reference:
-              - Green when stopped (ready to start)
-              - Red when streaming (ready to stop)
-              - Disabled during transitions
+              Controls ALL publishers for the selected channel:
+              - BLUE color for both states (August 2024: Changed from green/red to blue for consistency)
+              - Shows play icon when any publishers not streaming (ready to start all)
+              - Shows stop icon when all publishers streaming (ready to stop all)
+              - Disabled during API calls or when no publishers available
               - Shows spinner during API calls
-              - Provides user feedback via floating overlay (not layout-shifting alerts)
+              - Uses real-time WebSocket data for button state
+              
+              COLOR SCHEME (August 2024):
+              - Blue (primary) = Streaming controls
+              - Red (error) = Recording controls
             -->
             <v-btn
-              :color="streamingStatus.active ? 'error' : 'success'"
-              :icon="isControlling ? 'mdi-loading mdi-spin' : 
-                     streamingStatus.active ? 'mdi-stop' : 'mdi-play'"
+              :color="allPublishersStreaming ? 'primary' : 'primary'"
+              :icon="streamControlLoading ? 'mdi-loading mdi-spin' : 
+                     allPublishersStreaming ? 'mdi-stop' : 'mdi-play'"
               size="small"
               variant="tonal"
-              :loading="isControlling"
-              :disabled="isControlling || streamingStatus.state === 'starting' || streamingStatus.state === 'stopping'"
+              :loading="streamControlLoading"
+              :disabled="streamControlLoading || !hasPublishers"
               @click="handleToggleStreaming"
+              :title="!hasPublishers ? 'No publishers available for this channel' : 
+                      allPublishersStreaming ? 'Stop all publishers for this channel' : 'Start all publishers for this channel'"
             />
             
-            <!-- Start/Stop Recording -->
+            <!-- 
+              RECORDING CONTROL BUTTON
+              ========================
+              Controls ALL recorders on the device (device-wide, not channel-specific):
+              - Red color for both states (record = red, stop = red) 
+              - Shows record icon when any recorders not recording (ready to start all)
+              - Shows stop icon when all recorders recording (ready to stop all)
+              - Disabled during API calls or when no recorders available
+              - Shows spinner during API calls
+              - Uses real-time WebSocket data for button state
+            -->
             <v-btn
-              :color="recordingStatus.active ? 'error' : 'error'"
-              :icon="recordingStatus.active ? 'mdi-stop' : 'mdi-record'"
+              :color="allRecordersRecording ? 'error' : 'error'"
+              :icon="recordingControlLoading ? 'mdi-loading mdi-spin' : 
+                     allRecordersRecording ? 'mdi-stop' : 'mdi-record'"
               size="small"
               variant="tonal"
+              :loading="recordingControlLoading"
+              :disabled="recordingControlLoading || !hasRecorders"
               @click="handleToggleRecording"
+              :title="!hasRecorders ? 'No recorders available on this device' : 
+                      allRecordersRecording ? 'Stop all recorders on device' : 'Start all recorders on device'"
             />
             
             <!-- Audio Mute/Unmute Button -->
@@ -424,6 +457,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, toRefs } from 'vue'
 import AudioMeter from './AudioMeter.vue'
 import HlsVideoPlayer from './HlsVideoPlayer.vue'
+import { useApiAuth } from '@/composables/useApiAuth'
 
 interface Device {
   id: number
@@ -455,6 +489,11 @@ interface Props {
   userMessageType: 'success' | 'error' | 'info'
   previewError: string | null
   isVideoMode?: boolean
+  // WebSocket data for real-time control
+  realtimePublisherData: any
+  realtimeRecorderData: any
+  realtimeConnected: boolean
+  recorderConnected: boolean
 }
 
 const props = defineProps<Props>()
@@ -476,15 +515,21 @@ const {
   connectionStatus,
   streamingStatus,
   recordingStatus,
-  isControlling,
   isAudioMuted,
   canToggleAudio,
   currentDisplayUrl,
   userMessage,
   userMessageType,
   previewError,
-  isVideoMode
+  isVideoMode,
+  realtimePublisherData,
+  realtimeRecorderData,
+  realtimeConnected,
+  recorderConnected
 } = toRefs(props)
+
+// API authentication for HTTP requests
+const apiAuth = useApiAuth()
 
 // VIDEO TOGGLE RACE CONDITION PREVENTION (January 2025)
 // =====================================================
@@ -503,7 +548,7 @@ const {
 // - Timer reset on rapid channel changes (restart 3-second countdown)
 //
 const isVideoToggleDisabled = ref(false)
-let disableTimer: NodeJS.Timeout | null = null
+let disableTimer: ReturnType<typeof setTimeout> | null = null
 
 // Watch for channel changes and temporarily disable video toggle
 watch(selectedChannel, (newChannel, oldChannel) => {
@@ -527,13 +572,126 @@ watch(selectedChannel, (newChannel, oldChannel) => {
   }
 }, { immediate: false })
 
-// Event handlers that emit to parent
-const handleToggleStreaming = () => {
-  emit('toggle-streaming')
+// Control loading states
+const streamControlLoading = ref(false)
+const recordingControlLoading = ref(false)
+
+// Enhanced publishers for current channel (from WebSocket)
+const enhancedPublishers = computed(() => {
+  if (!selectedChannel.value) return []
+  
+  if (realtimeConnected.value && 
+      realtimePublisherData.value && 
+      realtimePublisherData.value.publishers &&
+      Array.isArray(realtimePublisherData.value.publishers)) {
+    return realtimePublisherData.value.publishers
+  }
+  
+  return []
+})
+
+// Enhanced recorders for device (from WebSocket) 
+const enhancedRecorders = computed(() => {
+  if (recorderConnected.value && 
+      realtimeRecorderData.value && 
+      realtimeRecorderData.value.recorders &&
+      Array.isArray(realtimeRecorderData.value.recorders)) {
+    return realtimeRecorderData.value.recorders
+  }
+  
+  return []
+})
+
+// Publisher control logic (channel-specific)
+const hasPublishers = computed(() => enhancedPublishers.value.length > 0)
+const allPublishersStreaming = computed(() => {
+  return hasPublishers.value && enhancedPublishers.value.every((pub: any) => pub.status?.started)
+})
+
+// Recorder control logic (device-wide)
+const hasRecorders = computed(() => enhancedRecorders.value.length > 0)
+const allRecordersRecording = computed(() => {
+  return hasRecorders.value && enhancedRecorders.value.every((rec: any) => rec.status?.state === 'started')
+})
+
+// Channel-Wide Publisher Control (Start/Stop All Publishers in Channel)
+const handleToggleStreaming = async () => {
+  if (!device.value || !selectedChannel.value) {
+    emit('user-message', 'Device or channel not available', 'error', 3000)
+    return
+  }
+
+  const action = allPublishersStreaming.value ? 'stop' : 'start'
+  const channelId = parseInt(selectedChannel.value, 10)
+  
+  if (isNaN(channelId)) {
+    emit('user-message', `Invalid channel ID: ${selectedChannel.value}`, 'error', 3000)
+    return
+  }
+
+  streamControlLoading.value = true
+
+  try {
+    emit('user-message', `${action === 'start' ? 'Starting' : 'Stopping'} all publishers for channel ${channelId}...`, 'info', 2000)
+    
+    const response = await apiAuth.post(`/api/devices/${device.value.id}/channels/${channelId}/publishers/${action}`)
+    
+    if (response.status === 'ok' || response.result) {
+      emit('user-message', `All publishers for channel ${channelId} ${action === 'start' ? 'started' : 'stopped'} successfully`, 'success', 3000)
+    } else {
+      emit('user-message', `Failed to ${action} publishers for channel ${channelId}`, 'error', 4000)
+    }
+  } catch (error: any) {
+    console.error(`Failed to ${action} all publishers:`, error)
+    
+    let errorMessage = `Failed to ${action} all publishers for channel ${channelId}`
+    if (error.response?.data?.error) {
+      errorMessage += `: ${error.response.data.error}`
+    } else if (error.message) {
+      errorMessage += `: ${error.message}`
+    }
+    
+    emit('user-message', errorMessage, 'error', 5000)
+  } finally {
+    streamControlLoading.value = false
+  }
 }
 
-const handleToggleRecording = () => {
-  emit('toggle-recording')
+// Device-Wide Recorder Control (Start/Stop All Recorders on Device)
+const handleToggleRecording = async () => {
+  if (!device.value) {
+    emit('user-message', 'Device not available', 'error', 3000)
+    return
+  }
+
+  const action = allRecordersRecording.value ? 'stop' : 'start'
+
+  recordingControlLoading.value = true
+
+  try {
+    emit('user-message', `${action === 'start' ? 'Starting' : 'Stopping'} all recorders on device...`, 'info', 2000)
+    
+    const response = await apiAuth.post(`/api/devices/${device.value.id}/recorders/${action}`)
+    
+    if (response.status === 'ok' || response.result) {
+      emit('user-message', `All recorders ${action === 'start' ? 'started' : 'stopped'} successfully`, 'success', 3000)
+    } else {
+      emit('user-message', `Failed to ${action} all recorders`, 'error', 4000)
+    }
+  } catch (error: any) {
+    console.error(`Failed to ${action} all recorders:`, error)
+    
+    let errorMessage = `Failed to ${action} all recorders`
+    if (error.response?.data?.error) {
+      errorMessage += `: ${error.response.data.error}`
+    } else if (error.message) {
+      errorMessage += `: ${error.message}`
+    }
+    
+    emit('user-message', errorMessage, 'error', 5000)
+  } finally {
+    recordingControlLoading.value = false
+  }
 }
 
 const handleToggleAudioMute = () => {

@@ -529,4 +529,134 @@ class DeviceProxyController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Get recorder status for all recorders on device
+     */
+    public function getRecorderStatus(Device $device)
+    {
+        try {
+            $url = "http://{$device->ip}/api/v2.0/recorders/status";
+            
+            $response = Http::withBasicAuth($device->username, $device->password)
+                ->timeout(10)
+                ->get($url);
+            
+            if ($response->successful()) {
+                $data = $response->json();
+                return response()->json([
+                    'recorders' => $data['result'] ?? [],
+                    'status' => $data['status'] ?? 'unknown',
+                    'device_id' => $device->id,
+                    'device_ip' => $device->ip,
+                    'fetched_at' => now()->toISOString()
+                ]);
+            }
+            
+            return response()->json([
+                'recorders' => [],
+                'status' => 'error',
+                'error' => 'Device unreachable',
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'fetched_at' => now()->toISOString()
+            ], 503);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'recorders' => [],
+                'status' => 'error',
+                'error' => 'Failed to fetch recorder status: ' . $e->getMessage(),
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'fetched_at' => now()->toISOString()
+            ], 500);
+        }
+    }
+
+    /**
+     * Start all recorders on device
+     */
+    public function startRecorders(Device $device)
+    {
+        try {
+            $url = "http://{$device->ip}/api/v2.0/recorders/control/start";
+            
+            $response = Http::withBasicAuth($device->username, $device->password)
+                ->timeout(15)
+                ->post($url);
+            
+            if ($response->successful()) {
+                $data = $response->json();
+                return response()->json([
+                    'result' => $data['result'] ?? 'Started',
+                    'status' => $data['status'] ?? 'ok',
+                    'device_id' => $device->id,
+                    'device_ip' => $device->ip,
+                    'action' => 'start',
+                    'timestamp' => now()->toISOString()
+                ]);
+            }
+            
+            return response()->json([
+                'error' => 'Device unreachable',
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'action' => 'start',
+                'timestamp' => now()->toISOString()
+            ], 503);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Failed to start recorders: ' . $e->getMessage(),
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'action' => 'start',
+                'timestamp' => now()->toISOString()
+            ], 500);
+        }
+    }
+
+    /**
+     * Stop all recorders on device
+     */
+    public function stopRecorders(Device $device)
+    {
+        try {
+            $url = "http://{$device->ip}/api/v2.0/recorders/control/stop";
+            
+            $response = Http::withBasicAuth($device->username, $device->password)
+                ->timeout(15)
+                ->post($url);
+            
+            if ($response->successful()) {
+                $data = $response->json();
+                return response()->json([
+                    'result' => $data['result'] ?? 'Stopped',
+                    'status' => $data['status'] ?? 'ok',
+                    'device_id' => $device->id,
+                    'device_ip' => $device->ip,
+                    'action' => 'stop',
+                    'timestamp' => now()->toISOString()
+                ]);
+            }
+            
+            return response()->json([
+                'error' => 'Device unreachable',
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'action' => 'stop',
+                'timestamp' => now()->toISOString()
+            ], 503);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Failed to stop recorders: ' . $e->getMessage(),
+                'device_id' => $device->id,
+                'device_ip' => $device->ip,
+                'action' => 'stop',
+                'timestamp' => now()->toISOString()
+            ], 500);
+        }
+    }
 }

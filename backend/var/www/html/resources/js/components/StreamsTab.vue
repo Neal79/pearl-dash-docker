@@ -7,6 +7,21 @@
   This component was successfully extracted from PearlDeviceCard.vue as a case study
   in proper component architecture and data flow patterns for real-time applications.
   
+  STREAMING/RECORDING CONTROL REMOVAL (August 2024):
+  ==================================================
+  
+  IMPORTANT: The streaming and recording control buttons were REMOVED from this component
+  and moved to PreviewTab.vue as requested. This component now focuses purely on:
+  
+  - Publisher list display and management
+  - Individual publisher controls (start/stop single publishers)
+  - Real-time status updates via WebSocket
+  - Pagination for large publisher lists
+  
+  The removed functionality (now in PreviewTab.vue):
+  - Channel-wide streaming control (start/stop ALL publishers for channel)
+  - Device-wide recording control (start/stop ALL recorders on device)
+  
   KEY ARCHITECTURAL PATTERNS DEMONSTRATED:
   
   1. REACTIVE PROPS PATTERN:
@@ -67,7 +82,7 @@
         </div>
 
         <!-- Publishers List -->
-        <div v-if="hasPublishers" class="publishers-list" :key="`publishers-${realtimeLastUpdated?.getTime() || Date.now()}`">
+        <div v-if="hasPublishers" class="publishers-list" :key="`publishers-${realtimeLastUpdated?.getTime() || 0}-${namesLastUpdated?.getTime() || 0}`">
           <!-- Paginated Publisher Items -->
           <v-list lines="two" density="compact" class="pa-0">
             <v-list-item 
@@ -85,6 +100,15 @@
 
               <v-list-item-title class="text-body-2 font-weight-medium">
                 {{ publisher.name || `Publisher ${publisher.id}` }}
+                <v-icon 
+                  v-if="publisher.hasNameFromServer" 
+                  size="12" 
+                  color="success" 
+                  class="ml-1"
+                  title="Name loaded from server"
+                >
+                  mdi-check-circle
+                </v-icon>
               </v-list-item-title>
               
               <v-list-item-subtitle class="text-caption">
@@ -139,6 +163,7 @@
           </div>
         </div>
       </div>
+
     </div>
 
     <!-- No Channel Selected -->
@@ -222,8 +247,11 @@ interface Props {
   selectedChannel: string | ''
   publishers: Publisher[]
   realtimePublisherData: any
+  realtimePublisherNames: any
   realtimeConnected: boolean
+  namesConnected: boolean
   realtimeLastUpdated: Date | null
+  namesLastUpdated: Date | null
   findChannel: (channelId: string) => any
 }
 
@@ -241,8 +269,11 @@ const {
   selectedChannel, 
   publishers, 
   realtimePublisherData, 
+  realtimePublisherNames,
   realtimeConnected, 
+  namesConnected,
   realtimeLastUpdated,
+  namesLastUpdated,
   findChannel 
 } = toRefs(props)
 
@@ -257,25 +288,66 @@ watch(selectedChannel, () => {
   currentPage.value = 1
 })
 
-// Check if current channel has publishers
+// Check if current channel has publishers (based on actual data we're displaying)
 const hasPublishers = computed(() => {
   if (!selectedChannel.value) return false
-  const channel = findChannel.value(selectedChannel.value)
-  return channel?.publishers && channel.publishers.length > 0
+  return enhancedPublishers.value.length > 0
 })
 
-// Hybrid publishers list - uses real-time data when available, fallback otherwise
+// Enhanced publishers list - merges status data with names from tiered polling
 const enhancedPublishers = computed(() => {
   // PRIORITY 1: Use WebSocket data if connected and available
   if (realtimeConnected.value && 
       realtimePublisherData.value && 
       realtimePublisherData.value.publishers &&
       Array.isArray(realtimePublisherData.value.publishers)) {
-    return realtimePublisherData.value.publishers
+    
+    const statusData = realtimePublisherData.value.publishers
+    const namesData = realtimePublisherNames.value?.publishers || []
+    
+    console.log(`📊 [StreamsTab] Merging publisher data for device ${props.device.ip}:`)
+    console.log(`   - Status data: ${statusData.length} publishers`)
+    console.log(`   - Names data: ${namesData.length} names`)
+    console.log(`   - Names connected: ${namesConnected.value}`)
+    
+    // Merge status data with names data, fallback to HTTP data if no WebSocket names
+    const merged = statusData.map(publisher => {
+      const nameData = namesData.find(n => n.id === publisher.id)
+      
+      // If no WebSocket name data, check HTTP publishers data for names
+      if (!nameData?.name && publishers.value && publishers.value.length > 0) {
+        const httpPublisher = publishers.value.find(p => p.id === publisher.id)
+        if (httpPublisher?.name) {
+          console.log(`   🔄 Using HTTP name for Publisher ${publisher.id}: "${httpPublisher.name}" (WebSocket names not available yet)`)
+          return {
+            ...publisher,
+            name: httpPublisher.name,
+            hasNameFromServer: true
+          }
+        }
+      }
+      
+      const result = {
+        ...publisher,
+        name: nameData?.name || publisher.name || `Publisher ${publisher.id}`,
+        hasNameFromServer: !!nameData?.name
+      }
+      
+      if (nameData?.name) {
+        console.log(`   ✅ Publisher ${publisher.id}: "${nameData.name}" (from WebSocket)`)
+      } else {
+        console.log(`   ⚠️ Publisher ${publisher.id}: "${result.name}" (fallback)`)
+      }
+      
+      return result
+    })
+    
+    return merged
   }
   
   // PRIORITY 2: Use HTTP data for initial load only (before WebSocket data arrives)
   if (publishers.value && publishers.value.length > 0) {
+    console.log(`📊 [StreamsTab] Using HTTP publisher data: ${publishers.value.length} publishers`)
     return publishers.value
   }
   
@@ -283,12 +355,15 @@ const enhancedPublishers = computed(() => {
   if (selectedChannel.value) {
     const channel = findChannel.value(selectedChannel.value)
     if (channel?.publishers && Array.isArray(channel.publishers)) {
+      console.log(`📊 [StreamsTab] Using channel publisher data: ${channel.publishers.length} publishers`)
       return channel.publishers
     }
   }
   
+  console.log(`📊 [StreamsTab] No publisher data available`)
   return []
 })
+
 
 const totalPages = computed(() => {
   return Math.ceil(enhancedPublishers.value.length / itemsPerPage)
@@ -302,9 +377,10 @@ const paginatedPublishers = computed(() => {
 // Reactive key generator for forcing Vue re-renders when real-time data updates
 const getPublisherKey = (publisher: any) => {
   const baseKey = `${publisher.id}-${selectedChannel.value}`
-  // Include real-time data timestamp to force re-render when data updates
-  const timestamp = realtimeLastUpdated.value?.getTime() || Date.now()
-  return `${baseKey}-${timestamp}`
+  // Include timestamps from both status and names data for proper reactivity
+  const statusTimestamp = realtimeLastUpdated.value?.getTime() || 0
+  const namesTimestamp = namesLastUpdated.value?.getTime() || 0
+  return `${baseKey}-${statusTimestamp}-${namesTimestamp}`
 }
 
 // Publisher Status Helper Functions
@@ -406,6 +482,7 @@ const toggleIndividualPublisher = async (publisher: Publisher) => {
     emit('user-message', errorMessage, 'error', 5000)
   }
 }
+
 </script>
 
 <style scoped>

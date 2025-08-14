@@ -42,6 +42,7 @@ Route::middleware('auth:web')->group(function () {
         Route::get('/devices/{device}/channels/{channel}/publishers/status', [\App\Http\Controllers\Api\DeviceStateController::class, 'getChannelPublisherStatus']);
         Route::get('/devices/{device}/channels/{channel}/publishers/{publisher}/name', [\App\Http\Controllers\Api\DeviceStateController::class, 'getPublisherName']);
         Route::post('/devices/{device}/channels/{channel}/publishers/control', [\App\Http\Controllers\Api\DeviceStateController::class, 'controlChannelPublishers']);
+        Route::get('/devices/{device}/recorders', [\App\Http\Controllers\Api\DeviceStateController::class, 'getRecorderStatus']);
         Route::post('/devices/{device}/force-poll', [\App\Http\Controllers\Api\DeviceStateController::class, 'forcePollDevice']);
         Route::post('/devices/{device}/toggle-polling', [\App\Http\Controllers\Api\DeviceStateController::class, 'toggleDevicePolling']);
         Route::get('/health', [\App\Http\Controllers\Api\DeviceStateController::class, 'getDevicesHealth']);
@@ -65,6 +66,11 @@ Route::middleware('auth:web')->group(function () {
     // Individual publisher control endpoints
     Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startIndividualPublisher']);
     Route::post('/devices/{device}/channels/{channel}/publishers/{publisher}/control/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopIndividualPublisher']);
+    
+    // Device-wide recorder control endpoints (for StreamsTab recording buttons)
+    Route::get('/devices/{device}/recorders/status', [\App\Http\Controllers\Api\DeviceProxyController::class, 'getRecorderStatus']);
+    Route::post('/devices/{device}/recorders/start', [\App\Http\Controllers\Api\DeviceProxyController::class, 'startRecorders']);
+    Route::post('/devices/{device}/recorders/stop', [\App\Http\Controllers\Api\DeviceProxyController::class, 'stopRecorders']);
     
     // WebSocket authentication token for authenticated users
     Route::get('/auth/token', [AuthController::class, 'getWebSocketToken']);
